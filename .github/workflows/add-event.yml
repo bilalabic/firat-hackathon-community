@@ -1,0 +1,106 @@
+name: Etkinlik Ekle
+
+on:
+  issues:
+    types: [opened]
+
+# Varsayılan olarak hiçbir yazma izni yok; izinler job düzeyinde verilir.
+permissions:
+  contents: read
+
+concurrency:
+  group: events-json
+  cancel-in-progress: false
+
+jobs:
+  add:
+    # Yalnızca repo sahibinin açtığı ve "etkinlik" etiketli Issue'lar işlenir.
+    # Başka bir kullanıcının Issue'su events.json'u değiştiremez.
+    if: >-
+      github.event.issue.user.login == github.repository_owner &&
+      contains(github.event.issue.labels.*.name, 'etkinlik')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      changed: ${{ steps.parse.outputs.changed }}
+      name: ${{ steps.parse.outputs.name }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.repository.default_branch }}
+
+      # Issue gövdesi shell'e değil, ortam değişkeni olarak aktarılır.
+      - name: Formu doğrula ve events.json'u güncelle
+        id: parse
+        env:
+          ISSUE_BODY: ${{ github.event.issue.body }}
+        run: python3 .github/scripts/add_event.py
+
+      - name: Commit ve push
+        if: steps.parse.outputs.changed == 'true'
+        env:
+          BRANCH: ${{ github.event.repository.default_branch }}
+          EVENT_ID: ${{ steps.parse.outputs.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add events.json
+          git commit -m "Etkinlik ekle: ${EVENT_ID} (#${ISSUE_NUMBER})"
+          git pull --rebase origin "${BRANCH}"
+          git push origin "HEAD:${BRANCH}"
+
+      - name: Hataları Issue'ya yorumla
+        if: steps.parse.outputs.changed != 'true'
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          ERRORS: ${{ steps.parse.outputs.errors }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Etkinlik **eklenemedi**, \`events.json\` değiştirilmedi."
+            echo
+            echo "${ERRORS:-- Form okunamadı.}"
+            echo
+            echo "Bu Issue açık bırakıldı. Düzeltilmiş bilgilerle yeni bir Issue açabilirsin."
+          } > "${RUNNER_TEMP}/comment.md"
+          gh issue comment "${ISSUE_NUMBER}" --body-file "${RUNNER_TEMP}/comment.md"
+          exit 1
+
+  deploy:
+    needs: add
+    if: needs.add.outputs.changed == 'true'
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    uses: ./.github/workflows/deploy-pages.yml
+
+  finish:
+    needs: [add, deploy]
+    if: needs.add.outputs.changed == 'true'
+    runs-on: ubuntu-latest
+    permissions:
+      issues: write
+    steps:
+      - name: Issue'yu yanıtla ve kapat
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          EVENT_NAME: ${{ needs.add.outputs.name }}
+          PAGE_URL: ${{ needs.deploy.outputs.page_url }}
+        run: |
+          set -euo pipefail
+          {
+            echo "Etkinlik başarıyla eklendi: ${EVENT_NAME}"
+            echo
+            echo "Site güncellendi: ${PAGE_URL:-https://bilalabic.github.io/firat-hackathon-community/}"
+          } > "${RUNNER_TEMP}/comment.md"
+          gh issue comment "${ISSUE_NUMBER}" --body-file "${RUNNER_TEMP}/comment.md"
+          gh issue close "${ISSUE_NUMBER}"

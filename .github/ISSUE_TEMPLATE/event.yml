@@ -1,0 +1,89 @@
+name: Etkinlik Ekle
+description: Siteye yeni bir hackathon veya teknoloji yarışması ekle.
+title: "[Etkinlik] "
+labels: ["etkinlik"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Formu doldurup gönder. Etkinlik otomatik olarak siteye eklenir.
+        Tarihleri **YYYY-AA-GG** biçiminde yaz (örnek: `2026-09-05`).
+
+  - type: input
+    id: name
+    attributes:
+      label: Etkinlik adı
+      placeholder: AI Hackathon 2026
+    validations:
+      required: true
+
+  - type: input
+    id: organizer
+    attributes:
+      label: Organizatör
+      placeholder: ABC Teknoloji
+    validations:
+      required: false
+
+  - type: input
+    id: deadline
+    attributes:
+      label: Son başvuru tarihi
+      description: YYYY-AA-GG
+      placeholder: "2026-08-25"
+    validations:
+      required: true
+
+  - type: input
+    id: eventDate
+    attributes:
+      label: Etkinlik tarihi
+      description: YYYY-AA-GG
+      placeholder: "2026-09-05"
+    validations:
+      required: true
+
+  - type: input
+    id: location
+    attributes:
+      label: Konum
+      placeholder: İstanbul
+    validations:
+      required: false
+
+  - type: dropdown
+    id: format
+    attributes:
+      label: Format
+      options:
+        - Yüz yüze
+        - Online
+        - Hibrit
+    validations:
+      required: false
+
+  - type: input
+    id: teamSize
+    attributes:
+      label: Takım büyüklüğü
+      placeholder: 2-4 kişi
+    validations:
+      required: false
+
+  - type: textarea
+    id: description
+    attributes:
+      label: Açıklama
+      description: Kısa bir açıklama (en fazla 400 karakter).
+      placeholder: Yapay zekâ odaklı hackathon.
+    validations:
+      required: false
+
+  - type: input
+    id: url
+    attributes:
+      label: Resmi bağlantı
+      description: http:// veya https:// ile başlamalı.
+      placeholder: https://example.com
+    validations:
+      required: true
