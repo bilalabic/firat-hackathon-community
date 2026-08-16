@@ -1,3 +1,74 @@
 [
- 
+  {
+    "id": "grid-up-hackathon",
+    "name": "Grid Up Hackathon",
+    "organizer": "ADM Elektrik & GDZ Elektrik",
+    "deadline": "2026-08-28",
+    "eventDate": "2026-09-02",
+    "location": "Online",
+    "format": "Online",
+    "teamSize": "1-4 kişi",
+    "description": "ADM Elektrik ve GDZ Elektrik iş birliğiyle düzenlenen Grid Up Hackathon, enerji altyapılarındaki gerçek problemlere yazılım, yapay zekâ, veri analitiği, IoT ve kullanıcı deneyimi odaklı çözümler geliştirmeyi amaçlıyor. Bireysel veya en fazla 4 kişilik takımlarla katılım sağlanabiliyor.",
+    "url": "https://www.patika.dev/bootcamp/grid-up-hackathon"
+  },
+  {
+    "id": "zemin360-hackathon",
+    "name": "Zemin360 Hackathon",
+    "organizer": "Türkiye Girişimcilik Vakfı (GİRVAK)",
+    "deadline": "2026-09-07",
+    "eventDate": "2026-10-09",
+    "location": "İstanbul",
+    "format": "Hibrit",
+    "teamSize": "1-3 kişi",
+    "description": "GİRVAK ve program paydaşları tarafından düzenlenen Zemin360 Hackathon, genç yeteneklerle kurumları buluşturan açık kaynak bir platform geliştirme maratonudur. Online geliştirme sürecinin ardından 9-11 Ekim'de İstanbul'da yüz yüze hackathon gerçekleştirilecek.",
+    "url": "https://www.zemin360.com/hackathon"
+  },
+  {
+    "id": "borsa-istanbul-fintech-hackathon",
+    "name": "Borsa İstanbul Fintech Hackathon",
+    "organizer": "Borsa İstanbul & İstanbul Teknik Üniversitesi (İTÜ)",
+    "deadline": "2026-09-11",
+    "eventDate": "2026-10-10",
+    "location": "Borsa İstanbul, İstanbul",
+    "format": "Yüz yüze",
+    "teamSize": "3 kişi",
+    "description": "Borsa İstanbul ve İTÜ iş birliğiyle düzenlenen hackathonda katılımcılar üretken yapay zekâ kullanarak finans alanındaki gerçek bir probleme çözüm geliştirecek. Yarışma 10-11 Ekim'de Borsa İstanbul yerleşkesinde 24 saat sürecek. Katılım yalnızca 3 kişilik takımlarla yapılabiliyor.",
+    "url": "https://www.borsaistanbul.com/fintech-hackathon"
+  },
+  {
+    "id": "greece-turkiye-hackathon-2026",
+    "name": "Greece–Türkiye Hackathon 2026",
+    "organizer": "Athens Startup Incubator (THEA) & Bilişim Vadisi",
+    "deadline": "2026-09-11",
+    "eventDate": "2026-11-26",
+    "location": "Atina, Yunanistan / İstanbul, Türkiye",
+    "format": "Yüz yüze",
+    "teamSize": "Belirtilmemiş",
+    "description": "Türkiye ve Yunanistan'dan 18-35 yaş arası gençleri bir araya getiren yapay zekâ odaklı uluslararası hackathon. Sağlık, akıllı şehirler, sürdürülebilir tarım ve akıllı turizm temalarını kapsıyor. Yarı final 26-27 Kasım'da Atina'da, final 3-4 Aralık'ta İstanbul'da yapılacak.",
+    "url": "https://greeceturkiyehackathon.com"
+  },
+  {
+    "id": "devnetwork-api-cloud-ai-hackathon-2026",
+    "name": "DevNetwork [API + Cloud + AI] Hackathon 2026",
+    "organizer": "DevNetwork",
+    "deadline": "2026-09-03",
+    "eventDate": "2026-09-03",
+    "location": "Online / Santa Clara, ABD",
+    "format": "Hibrit",
+    "teamSize": "Belirtilmemiş",
+    "description": "DevNetwork tarafından API World 2026 kapsamında düzenlenen uluslararası hackathon; API, bulut, yapay zekâ, IoT ve low-code teknolojilerine odaklanıyor. Online katılım 17 Ağustos-3 Eylül arasında açık; 2-3 Eylül'de Santa Clara'da yüz yüze bölüm ve ödül programı düzenleniyor.",
+    "url": "https://api-cloud-ai-hackathon-2026.devpost.com/"
+  },
+  {
+    "id": "oneaquahealth-ieee-global-hackathon",
+    "name": "OneAquaHealth IEEE Global Hackathon",
+    "organizer": "OneAquaHealth & IEEE",
+    "deadline": "2026-08-31",
+    "eventDate": "2026-09-16",
+    "location": "Online",
+    "format": "Online",
+    "teamSize": "Belirtilmemiş",
+    "description": "OneAquaHealth IEEE Global Hackathon, yapay zekâ, veri ve dijital sağlık teknolojileriyle kentsel tatlı su ekosistemlerinin izlenmesi ve One Health yaklaşımına yönelik çözümler geliştirmeyi amaçlayan global online bir hackathondur. Kayıtlar 31 Ağustos'ta kapanıyor.",
+    "url": "https://oneaquahealth-ieee-hackathon.devpost.com/"
+  }
 ]
