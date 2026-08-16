@@ -46,17 +46,5 @@
     "teamSize": "2-3 kişi",
     "description": "Gerçek veri setleri üzerinde modelleme yarışması. 2026 edisyonu tamamlandı.",
     "url": "https://example.org"
-  },
-  {
-    "id": "test-hackathon-2027",
-    "name": "Test Hackathon 2027",
-    "organizer": "Fırat Hackathon Community",
-    "deadline": "2027-03-10",
-    "eventDate": "2027-04-02",
-    "location": "Elazığ",
-    "format": "Hibrit",
-    "teamSize": "2-5 kişi",
-    "description": "Otomasyon testi için eklenen örnek etkinlik. Doğrulama sonrası silinecek.",
-    "url": "https://github.com/BilalAbic/firat-hackathon-community"
   }
 ]
