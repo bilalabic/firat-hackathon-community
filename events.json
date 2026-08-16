@@ -1,2 +1,14 @@
 [
+  {
+    "id": "test",
+    "name": "test",
+    "organizer": "test org",
+    "deadline": "2026-08-18",
+    "eventDate": "2026-12-12",
+    "location": "ist",
+    "format": "Yüz yüze",
+    "teamSize": "2-5",
+    "description": "yapay zeka tabi <img width=\"912\" height=\"912\" alt=\"Image\" src=\"https://github.com/user-attachments/assets/3fb145e9-d86a-4bd7-bdd6-e633c2f64cc0\" />",
+    "url": "https://bilalabic.github.io/firat-hackathon-community/"
+  }
 ]
