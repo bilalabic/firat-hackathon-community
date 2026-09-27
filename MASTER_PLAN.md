@@ -56,7 +56,7 @@ Owner actions outside the code:
 
 ## Milestone log
 
-### M0 Repository hygiene (2026-09-28): implemented, production deploy not yet verified
+### M0 Repository hygiene (2026-09-28): done, verified in production (PR #6, Pages run 36356572537)
 
 **Changes**
 - `.gitignore` added (env files except `.env.example`, Node/Next, Python, Supabase CLI state, caches, `_site/`).
@@ -88,4 +88,41 @@ Owner actions outside the code:
 - Staging via `cp` is the simplest option, because `upload-pages-artifact` has no include list.
 - No new dependencies.
 
-**Remaining:** after the push, confirm the Pages run succeeds and that the live site plus `events.json` return 200 while `/README.md` returns 404.
+**Production check:** Pages run `success`.
+- Live `/`, `style.css`, `script.js` and `events.json` return 200 (6 events).
+- `/README.md`, `/MASTER_PLAN.md`, `/docs/…` and `/.github/…` return 404.
+
+Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier commits) was set, because no global identity exists on this machine.
+
+### M1 Monorepo scaffold (2026-09-28): done locally
+
+**Changes**
+- pnpm workspace root (`apps/*`, `services/*`). Root scripts: `dev`, `lint`, `typecheck`, `test`, `build`. `allowBuilds` for `sharp` / `unrs-resolver` lives at the root.
+- `apps/web`: `create-next-app` 16.3.6 (TS, Tailwind v4, ESLint, App Router, `src/`), shadcn init (base-nova, neutral, Lucide), `lang="tr"`, Geist with `latin-ext` (Turkish glyphs), placeholder home, `/api/health`.
+- `apps/admin`: same base + official `dashboard-01` block, `TooltipProvider`, bound to `127.0.0.1:3001`, `/` → `/dashboard`, `noindex`, `/api/health`.
+- `services/api`: `uv` packaged project `fhc_api` (Python 3.12), FastAPI + uvicorn, `/health` + test. Tooling: ruff (with `ı`/`İ` allowed as confusables), mypy strict, pytest. A `package.json` wrapper puts it into the pnpm scripts.
+- Scaffold fixes:
+  - removed per-app `.gitignore` (it ignored `.env.example`), per-app `pnpm-workspace.yaml`, template READMEs and template SVGs;
+  - `typecheck` = `next typegen && tsc --noEmit` (the `LayoutProps` globals are generated);
+  - fixed 2 `react-hooks/set-state-in-effect` lint errors in shadcn code (`use-mobile` → `useSyncExternalStore`; chart range switch computed during render).
+- README development section. `LOCAL_ADMIN.md` updated to the `fhc_api` layout.
+
+**Checks run**
+- `pnpm lint`, `pnpm typecheck`, `pnpm test`, `pnpm build`: all exit 0.
+  - Build: web routes `/`, `/api/health`; admin routes `/`, `/dashboard`, `/api/health`.
+- `pnpm dev` smoke test:
+  - web, admin and api health endpoints return 200; `/dashboard` 200; web `lang="tr"`.
+  - Admin (3001) and API (8000) are **not** reachable on the LAN interface.
+  - Ports are released after stop; no errors in the dev log.
+
+**Review 1 (functional):**
+- MVP criteria 2–3 are met on empty apps.
+- Found and fixed: `.env.example` would have been ignored; typecheck failed on a clean checkout.
+
+**Review 2 (engineering):**
+- Removed the unused `pydantic-settings` (M3 adds it back when needed).
+- No shared packages. No extra dependencies beyond the generators' defaults and shadcn's block dependencies.
+
+**Open:**
+- Starlette 1.7 emits a deprecation warning for `httpx` in `TestClient` and recommends `httpx2`. Adding `httpx2` needs owner approval (the tool permission was denied), so `httpx` is kept for now.
+- Terminals opened before the `uv` install need a restart to find `uv`.

@@ -1,0 +1,10 @@
+{
+  "name": "api",
+  "private": true,
+  "scripts": {
+    "dev": "uv run uvicorn fhc_api.main:app --host 127.0.0.1 --port 8000 --reload",
+    "lint": "uv run ruff check && uv run ruff format --check",
+    "typecheck": "uv run mypy",
+    "test": "uv run pytest"
+  }
+}
