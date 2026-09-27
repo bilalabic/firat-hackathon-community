@@ -10,6 +10,16 @@
     "lint": "pnpm --recursive run lint",
     "typecheck": "pnpm --recursive run typecheck",
     "test": "pnpm --recursive run test",
-    "build": "pnpm --recursive run build"
+    "build": "pnpm --recursive run build",
+    "db:start": "supabase start && pnpm db:local-login",
+    "db:stop": "supabase stop",
+    "db:reset": "supabase db reset && pnpm db:local-login",
+    "test:db": "supabase test db",
+    "db:types": "supabase gen types typescript --local --schema api > apps/web/src/lib/database.types.ts",
+    "db:legacy-seed": "cd services/api && uv run python -m fhc_api.legacy_import ../../events.json > ../../supabase/seed_legacy_events.sql",
+    "db:local-login": "docker exec supabase_db_firat-hackathon-community psql -U postgres -qc \"alter role admin_backend with login password 'admin_backend_local_dev'\""
+  },
+  "devDependencies": {
+    "supabase": "2.118.0"
   }
 }

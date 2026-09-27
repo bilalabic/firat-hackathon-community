@@ -37,7 +37,7 @@ Each criterion is checked by a named test or a manual step recorded in the miles
 **Database and security**
 4. Migrations apply cleanly to an empty local DB and to the cloud project. `db reset` is repeatable.
 5. pgTAP: `anon` cannot select any `app.*` table. `api.events_public` returns only `published`, non-duplicate events. `internal_notes` is not exposed. Submit functions accept valid payloads, reject invalid ones, and cannot be used to read data.
-6. Manual check with `curl` and the publishable key against the cloud project: `GET /rest/v1/community_applications` fails, and `GET /rest/v1/events_public` (Accept-Profile: `api`) returns published rows only.
+6. Manual check with `curl` and the publishable key against the cloud project: `GET /rest/v1/community_applications` fails, `GET /rest/v1/events_public` (Accept-Profile: `api`) returns published rows only, and a request **without** `apikey` is rejected (401). The local stack returned 200 without a key in M2; it only exposes public data, but the cloud behavior must be confirmed.
 7. The API rejects requests without a bearer token (401) and with a foreign `Host` header (400) (pytest).
 8. No secret appears in the web client bundle: build output grep for `sb_secret`, `postgres://`, the bot token prefix → none.
 
