@@ -108,6 +108,25 @@ TELEGRAM_BOT_TOKEN=              # optional in V1
 TELEGRAM_CHANNEL_ID=             # optional in V1
 ```
 
+### Database role `admin_backend`
+
+Migrations create the role as `NOLOGIN`, with RLS policies granting it full access to `app.*`. Login is enabled per environment, outside migrations:
+
+- **Local:** `pnpm db:start` / `pnpm db:reset` run `pnpm db:local-login`, which sets the password `admin_backend_local_dev` **inside the local Docker container only**. It is deliberately not a seed file, because `supabase db push --include-seed` would run seed files against the cloud. Connection string: `postgresql://admin_backend:admin_backend_local_dev@127.0.0.1:54322/postgres`.
+- **Cloud (M7):** run once in the SQL editor with a generated password: `alter role admin_backend with login password '<generated>';`. Connect through the session pooler as user `admin_backend.<project-ref>`. Whether the pooler accepts a custom role must be verified at M7.
+
+### Database scripts (repo root)
+
+| Script | Does |
+|---|---|
+| `pnpm db:start` / `pnpm db:stop` | Start or stop the local Supabase stack (Docker) |
+| `pnpm db:reset` | Recreate the local DB: migrations + `seed_legacy_events.sql`, then `db:local-login` |
+| `pnpm test:db` | pgTAP tests in `supabase/tests/database/` |
+| `pnpm db:types` | Regenerate `apps/web/src/lib/database.types.ts` from the `api` schema |
+| `pnpm db:legacy-seed` | Regenerate `supabase/seed_legacy_events.sql` from `events.json` (deterministic) |
+
+Stop the stack when you are not developing (`pnpm db:stop`). Its ports listen on all interfaces (SECURITY S8).
+
 ## 3. Local development
 
 1. `pnpm install` (root), `uv sync` (in `services/api`)

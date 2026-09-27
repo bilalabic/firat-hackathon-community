@@ -7,7 +7,7 @@ Database: Supabase Postgres. Schema source: `supabase/migrations/*.sql` only.
 | Schema | Exposed via Data API | Contents |
 |---|---|---|
 | `app` | **No** | All tables. RLS enabled on every table with **no policies for `anon`/`authenticated`** (defense in depth) |
-| `api` | **Yes** (the only exposed schema; `public` is removed from exposed schemas) | `events_public` view, two `submit_*` functions |
+| `api` | **Yes** (the only exposed schema; `public` is removed from exposed schemas) | `events_public` view; functions `submit_community_application`, `submit_team_application`, `keep_alive` |
 
 The FastAPI backend connects as a dedicated Postgres role `admin_backend` (not `postgres`) with DML rights on `app`. DDL is done only by migrations.
 
@@ -104,9 +104,9 @@ No IP addresses or user agents are stored (data minimisation).
 
 ### `app.heartbeats` (keep-alive monitoring, D-19)
 
-`source text primary key check (source in ('vercel_cron','github_actions'))`, `last_seen_at timestamptz not null`, `count bigint not null default 0`.
+`source text primary key check (source in ('vercel_cron','github_actions'))`, `last_seen_at timestamptz not null`. (There is no counter, so the operation stays idempotent.)
 
-Written only by `api.keep_alive(source text)`: an upsert of `last_seen_at = now()` for an allowed source, followed by a real read (`select count(*) from app.events where status = 'published'`), returning that count. The worst abuse through the publishable key is refreshing a timestamp. The admin Overview reads this table via FastAPI.
+Written only by `api.keep_alive(source text)`: an upsert of `last_seen_at = now()` for an allowed source, followed by a real read (`select count(*) from app.events where status = 'published'`), returning that count. An unknown source fails with `23514`. The worst abuse through the publishable key is refreshing a timestamp. The admin Overview reads this table via FastAPI.
 
 ## 4. The `api` surface (the only thing the public can touch)
 

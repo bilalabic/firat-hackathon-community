@@ -126,3 +126,75 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 **Open:**
 - ~~Starlette `httpx` deprecation warning~~: resolved after M1 by switching to `httpx2` (owner-approved, D-20). pytest passes with `-W error`.
 - Terminals opened before the `uv` install need a restart to find `uv`.
+
+### M2 Database (2026-09-28): done locally
+
+**Changes**
+- Supabase CLI 2.118.0 as a root devDependency.
+- `supabase/config.toml`:
+  - Data API exposes only `api`;
+  - realtime, storage, edge runtime and analytics are disabled locally;
+  - auth signup is disabled.
+- Migrations:
+  - `20260928120000_core_schema.sql`: `app` schema, enums, 7 tables with constraints, RLS on all tables, `admin_backend` role (NOLOGIN, `statement_timeout` 15s) with policies and default grants. Also a **global** revoke of PUBLIC EXECUTE on future functions, and full revokes of Supabase's `public`-schema default grants.
+  - `20260928120100_public_api.sql`: `api.events_public` view, `submit_community_application`, `submit_team_application` and `keep_alive` (all security definer, empty `search_path`, generic `22023` errors), plus private payload helpers in `app`.
+- Seed: `supabase/seed_legacy_events.sql`, generated deterministically by `fhc_api.legacy_import` from `events.json` (6 events + official-source rows).
+- Local `admin_backend` login is set by `pnpm db:local-login` (docker exec). It is **not** a seed file, so it can never reach the cloud.
+- API code:
+  - `fhc_api.common.normalize` (`fold_turkish`, `slugify`, `normalize_url`) and `fhc_api.legacy_import`, with tests;
+  - `apps/web/src/lib/database.types.ts` generated from `api`.
+- Root scripts: `db:start`, `db:stop`, `db:reset`, `db:local-login`, `test:db`, `db:types`, `db:legacy-seed`.
+
+**Checks run**
+- `pnpm test:db`: 54 pgTAP tests pass (privileges, `api` surface, future-object defaults, visibility, constraints, forms, keep-alive).
+- Mutation checks:
+  - granting anon access to `app` → 3 tests fail;
+  - a default EXECUTE grant in `api` → the future-object test fails;
+  - after both are reverted, all pass.
+- HTTP through PostgREST with the publishable key:
+  - `events_public` 200 (6 rows);
+  - `community_applications` 404; `app` / `public` profiles 406;
+  - RPC valid 204, invalid 400 with the generic `invalid application`;
+  - `keep_alive` 200.
+- `admin_backend` logs in and does CRUD (inside a rolled-back transaction); it has no TRUNCATE.
+- `pnpm lint`, `pnpm typecheck`, `pnpm test` (28 pytest), `pnpm build`: pass.
+- The seed regenerates byte-identically.
+
+**Review 1 (functional, self)**
+- Found the local stack listening on all interfaces, plus a Docker firewall allow rule on the Public profile (SECURITY S8, owner decision pending).
+- Found that the local stack answers without `apikey` (cloud check added to MVP criterion 6).
+
+**Review 2 (independent subagent, read-only)**
+- 5 must-fix findings, all fixed and verified:
+  1. `IN SCHEMA` function revokes were no-ops, so new `api` functions were anon-executable (reproduced).
+  2. Phone was stored for Telegram applicants.
+  3. Telegram without a username was accepted.
+  4. The privilege test compared lower-case `'public'` and missed grants made by other roles.
+  5. The local password seed could reach the cloud via `--include-seed`.
+- Also fixed:
+  - `keep_alive` error leakage;
+  - `public` default grants beyond CRUD;
+  - non-string JSON values; empty and duplicate array items;
+  - `published_at` required when published; sent publications need `external_id`;
+  - non-empty normalized URL;
+  - `admin_backend` default grants and timeout;
+  - index changes: removed the redundant `event_sources(event_id)` index, added indexes for `source_id` and `duplicate_of`;
+  - en-dash team sizes; `bool` SQL literals.
+- Deferred (tracked, not blocking):
+  - dedicated low-privilege owner for definer functions;
+  - IANA timezone validation (API layer, M3);
+  - `duplicate_of` cycles (V1.3);
+  - `consent_version` allow-list (M5, with the notice text);
+  - `normalize_url` edge cases (IPv6 brackets, scheme-aware default ports, percent-encoding case) — M3;
+  - `first_sentence` abbreviations;
+  - public list index on `start_date` (when M5 queries exist).
+
+**M7 cloud checklist additions (from this milestone)**
+- Set exposed schemas to `api` only in the dashboard (or `supabase config push`). `db push` does not carry `config.toml [api]`.
+- Disable auth signup in the cloud project.
+- Never use `db push --include-seed` except for the one-time legacy import.
+- After the first push, compare `pg_default_acl` in the cloud with local.
+- Verify that requests without `apikey` return 401.
+- Verify that the session pooler accepts `admin_backend.<project-ref>`.
+
+**Open (owner):** SECURITY S8. Bind Docker to `127.0.0.1` or disable the Docker firewall rule. Until then, run `pnpm db:stop` when not developing.

@@ -12,6 +12,7 @@ Reviewed twice: pass 1 = repository and design review, pass 2 = challenge agains
 | S4 | Git history secret scan | Informational | Pattern scan: clean. Recommend enabling GitHub **secret scanning + push protection** (free for public repos); owner action in repo settings | No |
 | S5 | Actions pinned by tag (`@v5`, `@v4`, `@v3`) not SHA | Low (first-party actions) | Keep; workflows are removed at cutover | No |
 | S6 | Issue workflow input handling | Good | env-var passing, owner check, least-privilege permissions. Nothing to fix | — |
+| S8 | Local Supabase stack publishes ports on `0.0.0.0` (API 54321, DB 54322, Studio 54323, Mailpit 54324), and Windows Firewall has an inbound **Allow, any port** rule for `com.docker.backend.exe` on the **Public** profile. Studio has no auth, and the local DB password is the well-known `postgres`, so the local DB is likely reachable from untrusted Wi-Fi (found 2026-09-28, M2) | High (local data only: seed + test submissions) | Owner decision: (a) set Docker Engine default bind address `"ip": "127.0.0.1"` in Docker Desktop → Settings → Docker Engine (recommended; affects all containers); or (b) disable that firewall rule; (c) meanwhile run `pnpm db:stop` when not developing | No, but fix before real data is copied locally |
 | S7 | Legacy frontend rendering | Good | `textContent` + URL allow-list. Keep the same rules in React (no `dangerouslySetInnerHTML` for event data) | — |
 
 ## 2. Secrets inventory (target)
