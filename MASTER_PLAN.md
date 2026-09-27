@@ -197,4 +197,4 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - Verify that requests without `apikey` return 401.
 - Verify that the session pooler accepts `admin_backend.<project-ref>`.
 
-**Open (owner):** SECURITY S8. Bind Docker to `127.0.0.1` or disable the Docker firewall rule. Until then, run `pnpm db:stop` when not developing.
+**S8 decision (owner, 2026-09-28):** accepted risk; no Docker/firewall change. Stop the local stack when not developing.
