@@ -1,5 +1,9 @@
 # Fırat Hackathon Community
 
+> **Migration in progress.** The project is being rebuilt as a shared database, a local admin and a
+> new public website. The static site below keeps working until the cutover. See
+> [MASTER_PLAN.md](MASTER_PLAN.md) and [docs/](docs/).
+
 Fırat Hackathon Community tarafından takip edilen hackathon ve teknoloji yarışmalarını tek sayfada
 listeleyen küçük, hızlı ve mobil öncelikli bir site.
 
