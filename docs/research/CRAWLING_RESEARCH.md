@@ -6,7 +6,7 @@ Checked 2026-09-27. This document informs V1.2–V1.4. **No crawler is built in 
 
 | Tool | Status (verified) | Role |
 |---|---|---|
-| `httpx` | Mature | All HTTP retrieval, with timeouts, size caps and redirect limits |
+| `httpx2` 2.13.1 | Successor to `httpx` (pydantic org), recommended by Starlette 1.7 (D-20) | All HTTP retrieval, with timeouts, size caps and redirect limits |
 | `selectolax` 0.4.12 (2026-09-18) | MIT (Lexbor engine Apache-2.0), Windows wheels, Python 3.9–3.14 | Fast parsing: `<script type="application/ld+json">`, `<meta>`, links |
 | `trafilatura` 2.2.0 (2026-07-31) | Apache 2.0 (since 1.8), Python ≥ 3.10, Markdown output + metadata | Main-content text for LLM input |
 | Playwright (Python) | Mature | Fallback for JS-rendered pages only, enabled per source |
@@ -19,7 +19,7 @@ The proposed order was `HTTP → Crawl4AI → Playwright`. **Revised:**
 
 ```text
 1. Official API / JSON endpoint / RSS (if the source has one)
-2. httpx GET → selectolax: JSON-LD schema.org/Event + OpenGraph + <meta>
+2. httpx2 GET → selectolax: JSON-LD schema.org/Event + OpenGraph + <meta>
 3. trafilatura main text (for LLM extraction)
 4. Playwright render → steps 2–3 again   (only if source.requires_js = true)
 ```

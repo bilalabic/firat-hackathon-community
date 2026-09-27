@@ -124,5 +124,5 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - No shared packages. No extra dependencies beyond the generators' defaults and shadcn's block dependencies.
 
 **Open:**
-- Starlette 1.7 emits a deprecation warning for `httpx` in `TestClient` and recommends `httpx2`. Adding `httpx2` needs owner approval (the tool permission was denied), so `httpx` is kept for now.
+- ~~Starlette `httpx` deprecation warning~~: resolved after M1 by switching to `httpx2` (owner-approved, D-20). pytest passes with `-W error`.
 - Terminals opened before the `uv` install need a restart to find `uv`.

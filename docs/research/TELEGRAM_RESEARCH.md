@@ -28,7 +28,7 @@ Source: official Bot API docs `https://core.telegram.org/bots/api` (current: **B
 2. **Caption budget is 1024 characters.** The standard post is `sendPhoto` (event card) with a caption ≤ 1024. The template must be designed for this budget. If the copy is longer, fall back to `sendMessage` with a link preview. Do not split one event into two messages.
 3. **Editing is possible without time limits** for channel posts, so the "event changed after publication" flow can edit the original post. For material changes (dates, deadline) the default is edit + short "Updated:" line. A new post is used only when the owner chooses it.
 4. **Image by URL** (≤ 5 MB): the event card can be the public site's OpenGraph image URL (see AI_ARCHITECTURE / SYSTEM_ARCHITECTURE for the image decision). Upload (≤ 10 MB) is the fallback when the URL fetch fails.
-5. **Library choice:** we need about 7 endpoints. We call the HTTP API directly with `httpx` and Pydantic models for the responses. We do not add `python-telegram-bot` or `aiogram`, which are built for interactive bots with handlers and dispatchers. Revisit if we build interactive bot commands.
+5. **Library choice:** we need about 7 endpoints. We call the HTTP API directly with `httpx2` and Pydantic models for the responses. We do not add `python-telegram-bot` or `aiogram`, which are built for interactive bots with handlers and dispatchers. Revisit if we build interactive bot commands.
 6. **Formatting:** use `parse_mode=HTML` with a strict escaping function (`&`, `<`, `>` only). HTML is easier to escape correctly than MarkdownV2, which has about 18 reserved characters.
 
 ## 3. Open items
