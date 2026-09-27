@@ -24,7 +24,9 @@ __pycache__/
 supabase/.branches/
 supabase/.temp/
 
-# Local caches and build output
+# Local caches, logs and build output
+*.log
+*.pem
 .cache/
 _site/
 coverage/

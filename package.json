@@ -1,0 +1,15 @@
+{
+  "name": "firat-hackathon-community",
+  "private": true,
+  "packageManager": "pnpm@12.4.2",
+  "engines": {
+    "node": ">=22"
+  },
+  "scripts": {
+    "dev": "pnpm --recursive --parallel --stream run dev",
+    "lint": "pnpm --recursive run lint",
+    "typecheck": "pnpm --recursive run typecheck",
+    "test": "pnpm --recursive run test",
+    "build": "pnpm --recursive run build"
+  }
+}

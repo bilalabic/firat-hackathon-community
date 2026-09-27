@@ -56,13 +56,13 @@ No LLM confidence percentages are shown, now or later.
 ## 2. API (`services/api`)
 
 - Python 3.12+, `uv` project, FastAPI, Pydantic v2, pydantic-settings, psycopg 3 (pool), httpx.
-- Runs `uv run uvicorn app.main:app --host 127.0.0.1 --port 8000`.
+- Runs `uv run uvicorn fhc_api.main:app --host 127.0.0.1 --port 8000` (via `pnpm dev`).
 - Middleware: `TrustedHostMiddleware(allowed_hosts=["127.0.0.1","localhost"])`, bearer-token dependency on every route except `/health`. No CORS middleware (no browser caller).
 
 ### Module layout
 
 ```text
-services/api/app/
+services/api/src/fhc_api/   (uv packaged layout; tests in services/api/tests/)
 ├── main.py              app factory, middleware, routers
 ├── config.py            Settings (pydantic-settings, reads .env)
 ├── db.py                pool + transaction helper

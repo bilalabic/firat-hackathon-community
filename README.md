@@ -4,6 +4,23 @@
 > new public website. The static site below keeps working until the cutover. See
 > [MASTER_PLAN.md](MASTER_PLAN.md) and [docs/](docs/).
 
+## Development (new stack)
+
+Requirements (Windows): Node.js ≥ 22, pnpm 12, and [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`).
+
+```bash
+pnpm install                     # web + admin
+cd services/api && uv sync && cd ../..   # API (uv installs Python 3.12)
+pnpm dev                         # web :3000, admin 127.0.0.1:3001, api 127.0.0.1:8000
+pnpm lint && pnpm typecheck && pnpm test && pnpm build
+```
+
+| Path | What |
+|---|---|
+| `apps/web` | Public website (Next.js, Vercel) |
+| `apps/admin` | Local admin (Next.js + shadcn dashboard) |
+| `services/api` | Local admin API (FastAPI) |
+
 Fırat Hackathon Community tarafından takip edilen hackathon ve teknoloji yarışmalarını tek sayfada
 listeleyen küçük, hızlı ve mobil öncelikli bir site.
 
