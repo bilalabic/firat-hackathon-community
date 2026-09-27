@@ -72,7 +72,7 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Reason:** value early, low risk; dedup must precede automated discovery
 - **Status:** Accepted (2026-09-28)
 
-### D-12 Telegram integration: direct Bot API over httpx, no bot framework, no webhook
+### D-12 Telegram integration: direct Bot API over httpx2, no bot framework, no webhook
 - **Pass 1:** Bot API 10.3 methods cover send/edit/delete/invite. **Pass 2:** local-only admin → outbound calls + optional long polling; caption limit 1024 shapes the template; 48 h delete ambiguity → test (T-1)
 - **Status:** Accepted (2026-09-28)
 
@@ -87,7 +87,7 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Pass 2:** Satori supports flexbox only, ttf/otf/woff fonts, 500 KB bundle → simple template, Geist TTF, verify Turkish glyphs
 - **Status:** Accepted (2026-09-28)
 
-### D-15 Crawling stack (V1.2+): httpx + selectolax + trafilatura, Playwright only per-source; no Crawl4AI; no SQLite
+### D-15 Crawling stack (V1.2+): httpx2 + selectolax + trafilatura, Playwright only per-source; no Crawl4AI; no SQLite
 - **Status:** Accepted (2026-09-28)
 
 ### D-16 Provenance: event-level `event_sources` in V1; field-level evidence in V1.2
@@ -104,6 +104,14 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Chosen:** code, docs, DB, API and **admin** in English; **public UI Turkish-first** (`lang="tr"`, Turkish copy, Turkish date formatting); English public UI may be added in V2. Event content stays in its original language
 - **Implementation note:** keep all public UI strings in one `apps/web/lib/copy.ts` (not scattered), so adding English later does not need a rewrite. No i18n framework in V1
 - **Status:** Accepted (2026-09-28)
+
+### D-20 HTTP client: `httpx2` everywhere in the API
+- **Options:** `httpx` (0.28.x) · `httpx2`
+- **Chosen:** `httpx2` for the test client and for runtime clients (Telegram, fetcher, Ollama, web revalidation)
+- **Reason:** Starlette 1.7 deprecates `httpx` in `TestClient` and recommends `httpx2` (published by the pydantic org, 2.13.1). One HTTP client in the codebase
+- **Pass 1:** swapped the dev dependency; pytest passes with `-W error`. Transitive `truststore` (system certificate store) is installed. `httpx2-jsfetch` applies only to `emscripten` and is not installed. **Pass 2 (M3):** confirm the runtime API parity we rely on (timeouts, redirect limits, streaming with size cap, transport mocking in tests) at first runtime use
+- **Revisit:** if a runtime feature we need is missing or unstable in `httpx2`
+- **Status:** Accepted (2026-09-28, owner instruction)
 
 ### D-19 Supabase keep-alive design
 - **Options:** single GitHub Actions cron · single Vercel Cron · both + heartbeat monitoring · paid plan

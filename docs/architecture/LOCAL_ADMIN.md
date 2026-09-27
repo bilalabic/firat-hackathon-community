@@ -55,7 +55,7 @@ No LLM confidence percentages are shown, now or later.
 
 ## 2. API (`services/api`)
 
-- Python 3.12+, `uv` project, FastAPI, Pydantic v2, pydantic-settings, psycopg 3 (pool), httpx.
+- Python 3.12+, `uv` project, FastAPI, Pydantic v2, pydantic-settings, psycopg 3 (pool), httpx2.
 - Runs `uv run uvicorn fhc_api.main:app --host 127.0.0.1 --port 8000` (via `pnpm dev`).
 - Middleware: `TrustedHostMiddleware(allowed_hosts=["127.0.0.1","localhost"])`, bearer-token dependency on every route except `/health`. No CORS middleware (no browser caller).
 
@@ -73,7 +73,7 @@ services/api/src/fhc_api/   (uv packaged layout; tests in services/api/tests/)
 ├── review/              signals.py (deterministic checks), router.py
 ├── community/           models, repository, router (read + status update)
 ├── publishing/          hashing.py (publishable projection + sha256), models.py
-│   └── telegram/        client.py (httpx), router.py (V1: /telegram/check)
+│   └── telegram/        client.py (httpx2), router.py (V1: /telegram/check)
 ├── llm/                 provider.py (Protocol), ollama.py, router.py (V1: /llm/check)
 └── web/                 revalidate.py (POST to public site)
 ```

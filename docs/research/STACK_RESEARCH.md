@@ -70,5 +70,5 @@ Resolution: V1.2+ needs Python-first libraries (trafilatura, RapidFuzz, Playwrig
 |---|---|
 | LangChain / LangGraph / CrewAI / AutoGen | The pipeline is a fixed sequence (fetch → extract → validate → dedup → review). Plain functions are clearer and testable. |
 | LiteLLM | Adds a large dependency for routing we can do in about 100 lines. Also, PyPI versions 1.82.7/1.82.8 were compromised on 2026-03-24 (supply-chain attack; [LiteLLM security update](https://docs.litellm.ai/blog/security-update-march-2026)). This is a reminder to keep the dependency surface small. |
-| Crawl4AI | Browser-first (Playwright under the hood) and includes "undetected" browsing modes we do not want. It adds nothing over httpx + trafilatura, with Playwright as a fallback. See CRAWLING_RESEARCH. |
+| Crawl4AI | Browser-first (Playwright under the hood) and includes "undetected" browsing modes we do not want. It adds nothing over httpx2 + trafilatura, with Playwright as a fallback. See CRAWLING_RESEARCH. |
 | Redis, queues, vector DB, GraphQL, microservices | No V1 requirement. |

@@ -56,7 +56,7 @@ See CRAWLING_RESEARCH §5 (SSRF, size limits, image handling) and AI_ARCHITECTUR
 
 ## 6. Telegram
 
-- Token only in the API env. Requests use `https://api.telegram.org/bot<token>/…`, and the httpx client is configured so the URL (which contains the token) is **not logged**.
+- Token only in the API env. Requests use `https://api.telegram.org/bot<token>/…`, and the httpx2 client is configured so the URL (which contains the token) is **not logged**.
 - Captions are HTML-escaped. Only our template adds tags (`<b>`, `<a href>` with validated URLs).
 - The bot has only `can_post_messages` (+ `can_edit_messages`). Other rights are added only when a feature needs them.
 
