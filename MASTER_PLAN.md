@@ -244,3 +244,30 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
   - per-chunk decompression cap (unused in V1);
   - 422 before auth on malformed unauthenticated bodies;
   - app INFO logging config.
+
+### M5 Public web (2026-10-05): done locally
+
+**Built by a subagent, reviewed independently, fixes verified by the orchestrator.**
+- **Pages (Turkish-first):** `/`, `/hackathonlar` (Yaklaşan · Başvurular Açık · Son Günler · Geçmiş, Turkish-aware search, format/city filters, URL state, works without JS), `/hackathonlar/[slug]`, `/topluluk`, `/katki` (four intents), `/hakkinda`, 404 and error pages.
+- **Data access:** server-only Supabase client (schema `api`, publishable key, no `NEXT_PUBLIC_`).
+- **Caching:** Cache Components with a custom `events` cacheLife profile (revalidate 1 h, expire 2 h) and tags `events` and `event:<slug>`.
+- **Phase rules:** `lib/phase.ts`, with timezone and DST tests.
+- **Forms:** Server Actions → RPC, posted with POST (progressive enhancement); zod schemas mirror the DB rules. Bot filters: honeypot, client-measured elapsed time, consent versions. The KVKK notice is a marked TASLAK placeholder (Q9).
+- **SEO:** metadata, JSON-LD Event, sitemap, robots, and a deterministic OG card (vendored Geist TTF, OFL). Turkish glyphs verified. Unknown cards return 404 `no-store` with tags.
+- **Route handlers:** `/api/revalidate` (Bearer token, constant-time compare, tag schema) and `/api/cron/keep-alive` (`CRON_SECRET`, `no-store`); `vercel.json` sets a daily cron.
+- **Security headers:** `X-Frame-Options`, `frame-ancestors`, `nosniff`, `Referrer-Policy`; `X-Powered-By` off.
+- **Proxy:** malformed slugs get a real 404.
+
+**Checks (re-run by the orchestrator on the branch merged with main):**
+- lint, typecheck, build: pass. Tests: 75 passed.
+- Client bundle: 0 secret matches.
+- Live production server: security headers present; unknown OG card 404 `no-store`; malformed slug 404; form `method=POST`.
+
+**Review 2 (independent subagent):**
+- Fixed:
+  - 1 high: a cached 404 for the OG card survived revalidation;
+  - 1 medium: a no-JS submit leaked personal data into the GET query;
+  - 10 low: ISR cache growth from unknown slugs, duplicate noindex, phase staleness up to 1 day, `SITE_URL` fallback, security headers, honeypot autofill, input border contrast 1.59 → 3.21, consistent Turkish "sen" address, security unit tests, `@types/node` ^24.
+- Accepted: soft 404 (200 + noindex) for well-formed unknown slugs, plus a bounded 2 h shell cache entry (see PUBLIC_WEB).
+
+**Not done:** Lighthouse (MVP 17) is to be measured at M7 on Vercel. There is no dark mode.
