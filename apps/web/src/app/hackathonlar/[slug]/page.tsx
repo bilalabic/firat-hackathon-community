@@ -26,9 +26,10 @@ import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
 /**
- * The event, or the not-found page. An unknown slug is answered at request time (connection())
- * so its not-found render is never stored in the route cache: no cache growth from random
- * slugs, and no stale "not found" after the event is published.
+ * The event, or the not-found page. For an unknown slug the not-found content is rendered at
+ * request time (connection()), so a stale "not found" is never served after publishing. Next
+ * still stores the route's generic shell for that URL; it is tagged 'events' + 'event:<slug>'
+ * and expires with the 'events' cacheLife profile. Malformed slugs never get here (proxy.ts).
  */
 async function getPublishedEventOr404(slug: string): Promise<DetailedEvent> {
   const event = await getEvent(slug);
