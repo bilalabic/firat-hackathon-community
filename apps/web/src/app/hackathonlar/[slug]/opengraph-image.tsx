@@ -1,7 +1,6 @@
 import { readFile } from "node:fs/promises";
 import { join } from "node:path";
 
-import { notFound } from "next/navigation";
 import { ImageResponse } from "next/og";
 
 import { detail, eventRow, site } from "@/lib/copy";
@@ -44,7 +43,12 @@ function Fact({ label, value }: { label: string; value: string }) {
 export default async function Image({ params }: { params: Promise<{ slug: string }> }) {
   const { slug } = await params;
   const event = await getEvent(slug);
-  if (!event) notFound();
+  if (!event) {
+    // Not published (yet). notFound() here would store an untagged 404 for a year that
+    // revalidateTag cannot clear, so the card would stay missing after (re)publishing.
+    // A plain 404 Response keeps the tags of getEvent ('events', 'event:<slug>').
+    return new Response(null, { status: 404, headers: { "Cache-Control": "no-store" } });
+  }
 
   const titleSize = event.title.length > 70 ? 54 : event.title.length > 40 ? 66 : 78;
 

@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 
-import { checkBotGuards } from "./guard";
+import { checkBotGuards, HONEYPOT_FIELD } from "./guard";
 import {
   COMMUNITY_CONSENT_VERSION,
   normalizePhone,
@@ -165,14 +165,17 @@ describe("parseTeamForm", () => {
 
 describe("checkBotGuards", () => {
   it("flags a filled honeypot", () => {
-    expect(checkBotGuards(formData({ website: "http://spam", elapsed_ms: "9000" }))).toBe("honeypot");
+    expect(checkBotGuards(formData({ [HONEYPOT_FIELD]: "http://spam", elapsed_ms: "9000" }))).toBe("honeypot");
   });
-  it("flags submissions faster than 3 s or without timing", () => {
+  it("flags submissions without timing (no JavaScript)", () => {
+    expect(checkBotGuards(formData({}))).toBe("no_timing");
+    expect(checkBotGuards(formData({ elapsed_ms: "" }))).toBe("no_timing");
+  });
+  it("flags submissions faster than 3 s", () => {
     expect(checkBotGuards(formData({ elapsed_ms: "2999" }))).toBe("too_fast");
-    expect(checkBotGuards(formData({}))).toBe("too_fast");
     expect(checkBotGuards(formData({ elapsed_ms: "abc" }))).toBe("too_fast");
   });
   it("accepts a normal submission", () => {
-    expect(checkBotGuards(formData({ website: "", elapsed_ms: "3000" }))).toBe("ok");
+    expect(checkBotGuards(formData({ [HONEYPOT_FIELD]: "", elapsed_ms: "3000" }))).toBe("ok");
   });
 });

@@ -73,7 +73,7 @@
   --accent-foreground: #15171c;
   --destructive: #b42318;
   --border: #e3e5ea;
-  --input: #c9cdd5;
+  --input: #8a909c; /* 3.21:1 on white (WCAG 1.4.11 non-text contrast) */
   --ring: #0b5c73;
   --brand: #0b5c73;
   --brand-soft: #e8f1f4;

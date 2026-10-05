@@ -21,6 +21,7 @@ export async function submitApplication<T extends Record<string, Json | undefine
   const guard = checkBotGuards(formData);
   // A filled honeypot is answered like a success so bots learn nothing; nothing is stored.
   if (guard === "honeypot") return { status: "success" };
+  if (guard === "no_timing") return { status: "error", message: form.needsJavaScript };
   if (guard === "too_fast") return { status: "error", message: form.tooFast };
 
   const parsed = parse(formData);

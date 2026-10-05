@@ -4,7 +4,7 @@ import { Geist, Geist_Mono } from "next/font/google";
 import { SiteFooter } from "@/components/site-footer";
 import { SiteHeader } from "@/components/site-header";
 import { nav, site } from "@/lib/copy";
-import { siteUrl } from "@/lib/routes";
+import { siteUrl } from "@/lib/site-url";
 
 import "./globals.css";
 

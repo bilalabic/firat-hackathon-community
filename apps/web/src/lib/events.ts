@@ -2,23 +2,22 @@ import "server-only";
 
 import { cacheLife, cacheTag } from "next/cache";
 
+import { EVENTS_TAG, eventTag } from "./cache-tags";
 import type { DetailedEvent, EventRow, ListedEvent, PublicEvent } from "./event-types";
 import { countryName } from "./format";
 import { DEFAULT_TIMEZONE, getPhase } from "./phase";
+import { isEventSlug } from "./routes";
 import { foldForSearch } from "./search";
 import { supabase } from "./supabase";
 
 // Cached reads of api.events_public (PUBLIC_WEB §2). FastAPI revalidates the tags
-// 'events' and 'event:<slug>' after every publish, unpublish or edit; cacheLife('hours')
-// is the fallback when that call never arrives.
+// 'events' and 'event:<slug>' after every publish, unpublish or edit; the 'events' cacheLife
+// profile (next.config.ts: revalidate 1 h, expire 2 h) is the fallback when that call never
+// arrives.
 //
 // Phases depend on "today", so they are computed inside the cached scopes: a phase can be
-// at most one cache lifetime late, which is accepted in PUBLIC_WEB §2.
+// at most one cache lifetime (≤ 2 h) late, which is accepted in PUBLIC_WEB §2.
 
-export const EVENTS_TAG = "events";
-export const eventTag = (slug: string) => `event:${slug}`;
-
-const SLUG_PATTERN = /^[a-z0-9]+(-[a-z0-9]+)*$/;
 
 // One literal, so supabase-js infers the row type from it.
 const COLUMNS =
@@ -92,7 +91,7 @@ function toPublicEvent(row: SelectedRow): PublicEvent | null {
 /** All published events, ordered by start date. */
 export async function getPublishedEvents(): Promise<PublicEvent[]> {
   "use cache";
-  cacheLife("hours");
+  cacheLife("events");
   cacheTag(EVENTS_TAG);
 
   const { data, error } = await supabase()
@@ -106,7 +105,7 @@ export async function getPublishedEvents(): Promise<PublicEvent[]> {
 /** Published events with their phase, as sent to the list and home pages. */
 export async function getEventListing(): Promise<ListedEvent[]> {
   "use cache";
-  cacheLife("hours");
+  cacheLife("events");
   cacheTag(EVENTS_TAG);
 
   const now = new Date();
@@ -134,10 +133,10 @@ export async function getEventListing(): Promise<ListedEvent[]> {
 /** One published event with its phase, or null if the slug is not published. */
 export async function getEvent(slug: string): Promise<DetailedEvent | null> {
   "use cache";
-  cacheLife("hours");
+  cacheLife("events");
   cacheTag(EVENTS_TAG, eventTag(slug));
 
-  if (!SLUG_PATTERN.test(slug) || slug.length > 80) return null;
+  if (!isEventSlug(slug)) return null;
   const { data, error } = await supabase()
     .from("events_public")
     .select(COLUMNS)

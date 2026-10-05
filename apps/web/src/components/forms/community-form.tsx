@@ -14,22 +14,22 @@ import {
   Field,
   FormStatus,
   FormSuccess,
-  Honeypot,
+  GuardFields,
   PrivacyNotice,
   SubmitButton,
   useApplicationForm,
 } from "./form-kit";
 
 export function CommunityForm() {
-  const { state, pending, onSubmit, errors, statusRef } = useApplicationForm(submitCommunityApplication);
+  const { state, pending, formProps, errors, statusRef } = useApplicationForm(submitCommunityApplication);
   const [channel, setChannel] = useState<string>("");
 
   if (state.status === "success") return <FormSuccess message={copy.success} statusRef={statusRef} />;
 
   return (
-    <form onSubmit={onSubmit} noValidate className="relative space-y-6">
+    <form {...formProps} className="relative space-y-6">
       <FormStatus state={state} statusRef={statusRef} />
-      <Honeypot />
+      <GuardFields />
 
       <Field id="full_name" label={copy.fullName} required error={errors.full_name}>
         {(props) => <Input {...props} autoComplete="name" maxLength={120} className="h-10" />}

@@ -12,21 +12,21 @@ import {
   Field,
   FormStatus,
   FormSuccess,
-  Honeypot,
+  GuardFields,
   PrivacyNotice,
   SubmitButton,
   useApplicationForm,
 } from "./form-kit";
 
 export function TeamForm() {
-  const { state, pending, onSubmit, errors, statusRef } = useApplicationForm(submitTeamApplication);
+  const { state, pending, formProps, errors, statusRef } = useApplicationForm(submitTeamApplication);
 
   if (state.status === "success") return <FormSuccess message={copy.success} statusRef={statusRef} />;
 
   return (
-    <form onSubmit={onSubmit} noValidate className="relative space-y-6">
+    <form {...formProps} className="relative space-y-6">
       <FormStatus state={state} statusRef={statusRef} />
-      <Honeypot />
+      <GuardFields />
 
       <div className="grid gap-6 sm:grid-cols-2">
         <Field id="full_name" label={copy.fullName} required error={errors.full_name}>

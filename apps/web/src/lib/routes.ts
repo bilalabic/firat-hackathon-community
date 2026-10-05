@@ -40,12 +40,7 @@ export function formatFromSlug(slug: string | undefined): EventFormat | undefine
   return (Object.keys(formatSlugs) as EventFormat[]).find((key) => formatSlugs[key] === slug);
 }
 
-/** Absolute site URL without a trailing slash (canonical links, sitemap, OpenGraph). */
-export function siteUrl(): string {
-  const url = process.env.NEXT_PUBLIC_SITE_URL || "http://localhost:3000";
-  return url.replace(/\/+$/, "");
-}
-
-export function absoluteUrl(path: string): string {
-  return `${siteUrl()}${path}`;
+/** Same rule as app.events.slug: ^[a-z0-9]+(-[a-z0-9]+)*$, at most 80 characters. */
+export function isEventSlug(slug: string): boolean {
+  return slug.length <= 80 && /^[a-z0-9]+(-[a-z0-9]+)*$/.test(slug);
 }

@@ -41,7 +41,54 @@ The rule is implemented once in `apps/web/src/lib/phase.ts` with unit tests (`ph
 - **Category filter is not in V1**: there is no category vocabulary yet (OPEN_QUESTIONS Q12) and no published event has categories. Format and city filters are implemented.
 - `/topluluk` shows no Telegram/WhatsApp links: the channels do not exist yet (Q5, Q13). Invites are sent manually after the form.
 - `/katki` "Support the Project" is text only, no donation links (Q3).
-- Unknown slugs render the not-found page with `noindex`, but with HTTP 200 (a soft 404): the detail page streams a static shell first, so the status cannot change afterwards (Next.js `notFound()` docs). Unknown paths outside `[slug]` return a real 404. The OG image route returns a real 404 for unpublished slugs.
+- **Slugs that cannot exist** (not `^[a-z0-9]+(-[a-z0-9]+)*# Public Website
+
+`apps/web`: Next.js 16 (App Router, Cache Components), TypeScript, Tailwind, shadcn/ui, Geist, Lucide. Deployed to **Vercel** (project root directory `apps/web`).
+
+It is a hackathon directory and community portal, and **does not** use the dashboard layout. The inspiration is Vercel/Linear/Luma/GitHub in terms of restraint (typography, whitespace, content first). We do not copy any of them.
+
+## 1. Information architecture and routes
+
+| Route | Content | V1 |
+|---|---|---|
+| `/` | Hero line + "Applications open" and "Closing soon" sections + link to all | ✔ |
+| `/hackathons` | Full list; tabs **Upcoming · Applications open · Closing soon · Past**; text search; filters: format, city, category | ✔ |
+| `/hackathons/[slug]` | Detail: dates, deadline countdown, format/location, team size, eligibility, prize, official + apply buttons, "last updated" | ✔ |
+| `/hackathons/[slug]/opengraph-image` | 1200×630 PNG card (Satori). Also used as the Telegram image | ✔ |
+| `/community` | Why join, Telegram link, WhatsApp info, **Join Community** form | ✔ |
+| `/contribute` | Four separate intents: **Join the Team** (form), **Contribute Code** (GitHub link + good-first-issues), **Support the Project** (text only in V1), **Suggest an event** (link to the community channel / email) | ✔ |
+| `/about` | Mission, who runs it, contact | ✔ |
+| `/sitemap.xml`, `/robots.txt` | via `app/sitemap.ts`, `app/robots.ts` | ✔ |
+| `/api/revalidate` | `POST`, header `Authorization: Bearer <WEB_REVALIDATE_SECRET>`, body `{tags: string[]}` | ✔ |
+| `/api/cron/keep-alive` | `GET` from Vercel Cron (daily), requires `Authorization: Bearer <CRON_SECRET>`, calls `api.keep_alive('vercel_cron')`. It reads request headers, so it is never prerendered or cached | ✔ |
+
+**Language (D-18):** the public UI is Turkish-first: `<html lang="tr">`, Turkish labels, `Intl.DateTimeFormat('tr-TR')`. The paths above are the English code names; the public URL segments are Turkish (`/hackathonlar`, `/topluluk`, `/katki`, `/hakkinda`), defined in one route map. Every UI string lives in `lib/copy.ts`.
+
+### Phase rules (computed, in the event timezone, "today" = local date)
+
+| Phase | Rule |
+|---|---|
+| Applications open | `deadline ≥ today` |
+| Closing soon | open **and** `deadline − today ≤ 7 days` (subset of open, shown as a badge + tab) |
+| Upcoming | not open, and `(end_date ?? start_date) ≥ today` |
+| Past | `(end_date ?? start_date) < today` |
+| Undated | no dates → listed under Upcoming with "Dates TBA" |
+
+The rule is implemented once in `apps/web/src/lib/phase.ts` with unit tests (`phase.test.ts`), including the multi-day case that is broken in the legacy site. An invalid or missing timezone falls back to `Europe/Istanbul`.
+
+### As built (M5)
+
+- Route map: `apps/web/src/lib/routes.ts`; all UI copy: `apps/web/src/lib/copy.ts`.
+- List URL state uses Turkish parameter names: `?sekme=yaklasan|acik|son-gunler|gecmis`, `?q=`, `?bicim=yuz-yuze|cevrimici|hibrit`, `?sehir=<city>`. Without `sekme`, the list opens on **Başvurular Açık** if any application is open, otherwise on **Yaklaşan**.
+- Search folds Turkish characters like the legacy site (`İ/ı → i`, marks removed, case-insensitive), in `src/lib/search.ts`.
+- **Category filter is not in V1**: there is no category vocabulary yet (OPEN_QUESTIONS Q12) and no published event has categories. Format and city filters are implemented.
+- `/topluluk` shows no Telegram/WhatsApp links: the channels do not exist yet (Q5, Q13). Invites are sent manually after the form.
+- `/katki` "Support the Project" is text only, no donation links (Q3).
+ or longer than 80, the DB rule) get a real HTTP 404 from `src/proxy.ts` (matcher `/hackathonlar/:path+`) before any rendering or caching.
+- **Well-formed unknown slugs** render the not-found page with one `noindex` tag but HTTP 200 (a soft 404): the detail page streams a static shell first, so the status cannot change afterwards (Next.js `notFound()` docs). The not-found render calls `connection()` first, so it is never stored in the route cache (no cache growth, no stale "not found" after publishing). Unknown paths outside `[slug]` return a real 404.
+- **OG card of an unpublished slug:** HTTP 404 (`Cache-Control: no-store` to clients). It is returned as a plain `Response`, not `notFound()`: `notFound()` in a metadata image route stores an untagged 404 for a year that `revalidateTag` cannot clear. The plain 404 keeps the tags of `getEvent` (`events`, `event:<slug>`), so publishing (FastAPI revalidates both tags) replaces it with the card. `connection()` is not an option there: metadata image routes are static by default and fail with `DYNAMIC_SERVER_USAGE` (verified in M5).
+- Security headers on every route (`next.config.ts`): `X-Frame-Options: DENY`, `Content-Security-Policy: frame-ancestors 'none'`, `X-Content-Type-Options: nosniff`, `Referrer-Policy: strict-origin-when-cross-origin`; `poweredByHeader: false`.
+- Site URL (`src/lib/site-url.ts`): `NEXT_PUBLIC_SITE_URL`, else `https://${VERCEL_PROJECT_PRODUCTION_URL}`, else localhost; a production build (`VERCEL_ENV=production`) with neither fails.
 
 ## 2. Data access
 
@@ -54,7 +101,7 @@ The rule is implemented once in `apps/web/src/lib/phase.ts` with unit tests (`ph
 ```ts
 async function getPublishedEvents() {
   'use cache'
-  cacheLife('hours')      // time-based fallback if revalidation never arrives
+  cacheLife('events')     // time-based fallback if revalidation never arrives (next.config.ts)
   cacheTag('events')
   ...
 }
@@ -63,9 +110,9 @@ async function getPublishedEvents() {
 - `cacheComponents: true`.
 - FastAPI calls `/api/revalidate` with tags `['events', 'event:<slug>']` after publish, unpublish or edit. The handler calls `revalidateTag(tag, { expire: 0 })`.
 - If the laptop is off, nothing breaks. Content is at most `cacheLife` old, and phases shift at most an hour late.
-- Phase computation depends on "today". It runs at render inside the cached function, so drift is bounded by `cacheLife('hours')`. This is acceptable.
+- Phase computation depends on "today". It runs at render inside the cached function, so drift is bounded by the cache lifetime. As built, the custom `events` profile (`stale` 5 min, `revalidate` 1 h, `expire` 2 h) bounds it to about 2 h even after a quiet period; the built-in `hours` profile would allow up to 1 day (its `expire`). This is acceptable.
 - Search and filters: the published dataset is small (tens to low hundreds). The list page sends the published events once, and filtering happens client-side (like the legacy site). The URL holds filter state (`?sekme=acik&q=ai`, see §1 "As built"). The server also renders the filtered result from the query string (inside a `<Suspense>` boundary, from the same cached data), so a shared link and a no-JavaScript GET form show the same result. Revisit with server-side search if the list grows past about 500 events.
-- As built: `src/lib/supabase.ts` (server-only client), `src/lib/events.ts` (`getPublishedEvents`, `getEventListing`, `getEvent`, all `'use cache'` + `cacheLife('hours')`; tags `events`, and `events` + `event:<slug>` for one event).
+- As built: `src/lib/supabase.ts` (server-only client), `src/lib/events.ts` (`getPublishedEvents`, `getEventListing`, `getEvent`, all `'use cache'` + `cacheLife('events')`; tags `events`, and `events` + `event:<slug>` for one event).
 
 ## 3. Forms (Join Community, Join the Team)
 
@@ -84,6 +131,8 @@ async function getPublishedEvents() {
 - Known limitation: the publishable key allows calling the RPC directly and bypassing the honeypot. The impact is spam only, never data exposure. This is accepted for V1 (see RISKS R-07).
 - As built (M5): Server Actions `app/topluluk/actions.ts`, `app/katki/actions.ts` → `src/lib/forms/submit.ts`; zod schemas in `src/lib/forms/schemas.ts` (unit-tested); `consent_version` = `2026-10-community-v1` / `2026-10-team-v1`, set on the server.
   - **Timing:** the page is prerendered, so a server-rendered timestamp would be the build time. Instead the browser measures the fill time (mount → submit, both on the client clock, so clock skew does not matter) and sends `elapsed_ms`; the action rejects values below 3000 ms. The value is not signed: signing needs another server secret and would not stop a bot that calls the RPC directly anyway (R-07). Consequence: the forms need JavaScript.
+  - **Progressive enhancement:** the Server Action is the form's `action` (POST). Before hydration or without JavaScript the browser POSTs to it, so personal data never lands in a GET URL; such a submit has no `elapsed_ms` and is answered with "JavaScript needed", storing nothing. After hydration `onSubmit` takes over (one POST, verified), adds `elapsed_ms` and keeps the typed values on a validation error.
+  - The honeypot field name (`fhc_hp_7c2`) is chosen so browser autofill does not recognise it; it is hidden, `aria-hidden`, `tabIndex=-1`, `autocomplete=off`.
   - A filled honeypot gets the generic success answer and nothing is stored. A too-fast submission gets an error and nothing is stored. Errors are generic; the RPC error code is logged, never the payload.
   - Submitting goes through `onSubmit` (not the form `action`), so a validation error does not clear what the user typed. Field errors are linked with `aria-describedby`; focus moves to the error summary or the success message.
   - **The KVKK privacy notice is a marked placeholder** (`TASLAK – yayına alınmadan önce onaylanacak`) until the owner approves the text (Q9). The forms must not go live before that.

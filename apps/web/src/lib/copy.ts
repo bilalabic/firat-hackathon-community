@@ -26,7 +26,7 @@ export const footer = {
   line: "Gönüllüler tarafından yürütülen açık kaynak bir topluluk projesi.",
   github: "GitHub",
   sources:
-    "Etkinlik bilgileri resmî kaynaklardan derlenir. Başvurmadan önce resmî sayfayı kontrol edin.",
+    "Etkinlik bilgileri resmî kaynaklardan derlenir. Başvurmadan önce resmî sayfayı kontrol et.",
 } as const;
 
 export const common = {
@@ -87,7 +87,7 @@ export const home = {
   openTitle: "Başvurular açık",
   openLead: "Son başvuru tarihi henüz geçmemiş hackathonlar.",
   upcomingTitle: "Yaklaşan",
-  upcomingLead: "Başvurusu kapanmış ama henüz gerçekleşmemiş etkinlikler.",
+  upcomingLead: "Başvurusu açık olmayan, henüz bitmemiş etkinlikler.",
   communityTitle: "Tek başına başvurmak zorunda değilsin",
   communityLead:
     "Topluluğa katıl; etkinlik duyurularını al, takım arkadaşı bul, deneyimlerini paylaş.",
@@ -114,10 +114,10 @@ export const list = {
   resultCount(count: number): string {
     return count === 0 ? "Sonuç yok" : `${count} etkinlik`;
   },
-  emptyFiltered: "Aramanızla eşleşen etkinlik bulunamadı. Filtreleri temizleyip tekrar deneyin.",
+  emptyFiltered: "Aramanla eşleşen etkinlik bulunamadı. Filtreleri temizleyip tekrar dene.",
   emptyTab: {
     yaklasan: "Takvimde yaklaşan etkinlik yok.",
-    acik: "Şu anda başvurusu açık hackathon yok. Yaklaşan etkinliklere göz atabilirsiniz.",
+    acik: "Şu anda başvurusu açık hackathon yok. Yaklaşan etkinliklere göz atabilirsin.",
     "son-gunler": "Önümüzdeki 7 gün içinde başvurusu kapanan hackathon yok.",
     gecmis: "Henüz geçmiş etkinlik yok.",
   } satisfies Record<TabSlug, string>,
@@ -153,23 +153,22 @@ export const detail = {
   apply: "Başvur",
   lastUpdated: "Son güncelleme",
   unverified:
-    "Bu etkinliğin bilgileri henüz resmî kaynakla doğrulanmadı. Başvurmadan önce resmî sayfayı kontrol edin.",
+    "Bu etkinliğin bilgileri henüz resmî kaynakla doğrulanmadı. Başvurmadan önce resmî sayfayı kontrol et.",
   posterAlt(title: string): string {
     return `${title} afişi`;
   },
-  notFoundTitle: "Etkinlik bulunamadı",
 } as const;
 
 export const notFoundPage = {
   title: "Sayfa bulunamadı",
-  lead: "Aradığınız sayfa taşınmış, yayından kaldırılmış ya da hiç var olmamış olabilir.",
+  lead: "Aradığın sayfa taşınmış, yayından kaldırılmış ya da hiç var olmamış olabilir.",
   cta: "Hackathonlara göz at",
   home: "Ana sayfaya dön",
 } as const;
 
 export const errorPage = {
   title: "Bir şeyler ters gitti",
-  lead: "Sayfa şu anda yüklenemedi. Biraz sonra tekrar deneyin.",
+  lead: "Sayfa şu anda yüklenemedi. Biraz sonra tekrar dene.",
   retry: "Tekrar dene",
 } as const;
 
@@ -239,10 +238,12 @@ export const form = {
   submit: "Başvuruyu gönder",
   submitting: "Gönderiliyor…",
   successTitle: "Başvurun alındı",
-  errorSummary: "Form gönderilemedi. İşaretli alanları düzeltip tekrar deneyin.",
-  genericError: "Başvuru şu anda kaydedilemedi. Lütfen biraz sonra tekrar deneyin.",
-  tooFast: "Form çok hızlı gönderildi. Lütfen alanları kontrol edip tekrar gönderin.",
-  honeypotLabel: "Bu alanı boş bırakın",
+  errorSummary: "Form gönderilemedi. İşaretli alanları düzeltip tekrar dene.",
+  genericError: "Başvuru şu anda kaydedilemedi. Biraz sonra tekrar dene.",
+  tooFast: "Form çok hızlı gönderildi. Alanları kontrol edip tekrar gönder.",
+  needsJavaScript:
+    "Formu göndermek için tarayıcında JavaScript açık olmalı. JavaScript'i açıp sayfayı yenile.",
+  honeypotLabel: "Bu alanı boş bırak",
   consentLabel: "Aydınlatma metnini okudum; bilgilerimin bu başvuru için işlenmesini kabul ediyorum.",
   privacyTitle: "Aydınlatma metni",
   privacyDraftBadge: "TASLAK – yayına alınmadan önce onaylanacak",
@@ -251,18 +252,19 @@ export const form = {
   errors: {
     fullName: "Ad soyad 2 ile 120 karakter arasında olmalı.",
     tooLong(max: number): string {
-      return `En fazla ${max} karakter girebilirsiniz.`;
+      return `En fazla ${max} karakter girebilirsin.`;
     },
-    choose: "Listeden bir seçenek seçin.",
-    channel: "Tercih ettiğiniz kanalı seçin.",
+    choose: "Listeden bir seçenek seç.",
+    channel: "Tercih ettiğin kanalı seç.",
     telegram:
       "Telegram kullanıcı adı 5–32 karakter olmalı; yalnızca harf, rakam ve alt çizgi içerebilir.",
-    phone: "Geçerli bir cep telefonu numarası girin (örnek: 0532 123 45 67).",
-    interests: "En fazla 10 ilgi alanı seçebilirsiniz.",
-    areas: "En az bir alan seçin.",
+    phone: "Geçerli bir cep telefonu numarası gir (örnek: 0532 123 45 67).",
+    interests: "En fazla 10 ilgi alanı seçebilirsin.",
+    areas: "En az bir alan seç.",
     github: "Adres https://github.com/ ile başlamalı.",
-    linkedin: "Adres https://www.linkedin.com/ ile başlamalı.",
-    consent: "Devam etmek için aydınlatma metnini onaylayın.",
+    linkedin:
+      "Adres https:// ile başlayan bir linkedin.com adresi olmalı (örnek: https://www.linkedin.com/in/kullanici-adi).",
+    consent: "Devam etmek için aydınlatma metnini onayla.",
   },
 } as const;
 
@@ -273,7 +275,7 @@ export const communityForm = {
   university: "Üniversite",
   fieldOfStudy: "Bölüm",
   yearOfStudy: "Sınıf",
-  yearPlaceholder: "Seçin",
+  yearPlaceholder: "Seç",
   years: {
     prep: "Hazırlık",
     "1": "1. sınıf",
@@ -301,7 +303,7 @@ export const communityForm = {
     blockchain: "Blokzincir",
   },
   experienceLevel: "Deneyim seviyen",
-  experiencePlaceholder: "Seçin",
+  experiencePlaceholder: "Seç",
   experienceLevels: {
     none: "Yeni başlıyorum",
     beginner: "Başlangıç",
@@ -340,11 +342,11 @@ export const teamForm = {
   githubUrl: "GitHub profili",
   linkedinUrl: "LinkedIn profili",
   availability: "Haftalık ayırabileceğin zaman",
-  availabilityPlaceholder: "Seçin",
+  availabilityPlaceholder: "Seç",
   availabilityOptions: {
     "1-3h": "Haftada 1–3 saat",
     "4-7h": "Haftada 4–7 saat",
-    "8h+": "Haftada 8 saatten fazla",
+    "8h+": "Haftada 8 saat ve üzeri",
   },
   motivation: "Neden ekibe katılmak istiyorsun?",
 } as const;

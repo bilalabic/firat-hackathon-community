@@ -20,9 +20,14 @@ import { cn } from "@/lib/utils";
 type Action = (state: FormState, formData: FormData) => Promise<FormState>;
 
 /**
- * Wires a form to its Server Action. Submits through onSubmit (not the form `action`) so a
- * validation error does not reset what the user typed, and adds the fill time measured on the
- * client (see lib/forms/guard.ts). Moves focus to the error summary or success message.
+ * Wires a form to its Server Action.
+ * - The Server Action is the form's `action`, so before hydration or without JavaScript the
+ *   browser POSTs to it (progressive enhancement): personal data never ends up in a GET URL.
+ *   Such a submit carries no fill time and is rejected with a "JavaScript needed" message.
+ * - After hydration, onSubmit takes over (preventDefault stops the native/action submit): it adds
+ *   the fill time measured on the client (lib/forms/guard.ts) and dispatches without React's
+ *   automatic form reset, so a validation error keeps what the user typed.
+ * - Focus moves to the error summary or the success message.
  */
 export function useApplicationForm(action: Action) {
   const [state, dispatch, pending] = useActionState(action, initialFormState);
@@ -45,7 +50,19 @@ export function useApplicationForm(action: Action) {
   };
 
   const errors = state.status === "error" ? (state.fieldErrors ?? {}) : {};
-  return { state, pending, onSubmit, errors, statusRef };
+  const formProps = { action: dispatch, onSubmit, noValidate: true } as const;
+  return { state, pending, formProps, errors, statusRef };
+}
+
+/** The bot-filter fields every application form carries. */
+export function GuardFields() {
+  return (
+    <>
+      {/* Filled in by onSubmit; stays empty on a no-JavaScript submit. */}
+      <input type="hidden" name={ELAPSED_FIELD} defaultValue="" />
+      <Honeypot />
+    </>
+  );
 }
 
 export function describedBy(id: string, { hint, error }: { hint?: boolean; error?: string }) {

@@ -1,5 +1,6 @@
 import type { DetailedEvent } from "./event-types";
-import { absoluteUrl, routes } from "./routes";
+import { routes } from "./routes";
+import { absoluteUrl } from "./site-url";
 
 // The six characters backslash, "u003c": the JSON escape for "<".
 const ESCAPED_LT = `${String.fromCharCode(92)}u003c`;

@@ -1,7 +1,8 @@
 import type { MetadataRoute } from "next";
 
 import { getPublishedEvents } from "@/lib/events";
-import { absoluteUrl, routes } from "@/lib/routes";
+import { routes } from "@/lib/routes";
+import { absoluteUrl } from "@/lib/site-url";
 
 // Published events only (api.events_public), revalidated with the 'events' tag.
 export default async function sitemap(): Promise<MetadataRoute.Sitemap> {

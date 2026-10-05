@@ -2,13 +2,14 @@ import { ArrowLeft, ExternalLink as ExternalIcon, Info } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
+import { connection } from "next/server";
 import { Suspense, type ReactNode } from "react";
 
 import { ExternalLink } from "@/components/external-link";
 import { Container } from "@/components/page-shell";
 import { PhaseBadge } from "@/components/phase-badge";
 import { buttonVariants } from "@/components/ui/button";
-import { common, deadlineCountdown, detail, list } from "@/lib/copy";
+import { common, deadlineCountdown, detail, list, notFoundPage } from "@/lib/copy";
 import type { DetailedEvent } from "@/lib/event-types";
 import { getEvent, getPublishedEvents } from "@/lib/events";
 import {
@@ -24,6 +25,20 @@ import { eventJsonLd, serializeJsonLd } from "@/lib/json-ld";
 import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
+/**
+ * The event, or the not-found page. An unknown slug is answered at request time (connection())
+ * so its not-found render is never stored in the route cache: no cache growth from random
+ * slugs, and no stale "not found" after the event is published.
+ */
+async function getPublishedEventOr404(slug: string): Promise<DetailedEvent> {
+  const event = await getEvent(slug);
+  if (!event) {
+    await connection();
+    notFound();
+  }
+  return event;
+}
+
 export async function generateStaticParams() {
   const events = await getPublishedEvents();
   return events.map((event) => ({ slug: event.slug }));
@@ -32,7 +47,8 @@ export async function generateStaticParams() {
 export async function generateMetadata({ params }: PageProps<"/hackathonlar/[slug]">): Promise<Metadata> {
   const { slug } = await params;
   const event = await getEvent(slug);
-  if (!event) notFound();
+  // The page itself calls notFound() (which adds the noindex tag once); here only a title.
+  if (!event) return { title: notFoundPage.title };
   const description = event.summary ?? undefined;
   const path = routes.event(event.slug);
   return {
@@ -95,8 +111,7 @@ function Chips({ items }: { items: string[] }) {
 
 async function EventDetail({ params }: Pick<PageProps<"/hackathonlar/[slug]">, "params">) {
   const { slug } = await params;
-  const event = await getEvent(slug);
-  if (!event) notFound();
+  const event = await getPublishedEventOr404(slug);
 
   const officialUrl = safeExternalUrl(event.official_url);
   const applicationUrl = event.phase.phase === "open" ? safeExternalUrl(event.application_url) : null;
