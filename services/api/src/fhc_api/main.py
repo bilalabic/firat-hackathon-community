@@ -1,8 +1,8 @@
 """App factory. Run with `uvicorn fhc_api.main:create_app_from_env --factory`."""
 
 import logging
-from collections.abc import AsyncIterator
-from contextlib import asynccontextmanager
+from collections.abc import AsyncIterator, Callable
+from contextlib import ExitStack, asynccontextmanager
 from typing import Any
 
 from fastapi import APIRouter, Depends, FastAPI
@@ -16,7 +16,7 @@ from fhc_api.config import Settings
 from fhc_api.db import create_pool
 from fhc_api.events.router import router as events_router
 from fhc_api.llm.ollama import OllamaProvider
-from fhc_api.llm.provider import LLMProvider
+from fhc_api.llm.provider import LLMConfigError, LLMProvider, MisconfiguredProvider
 from fhc_api.llm.router import build_llm_router
 from fhc_api.overview.router import router as overview_router
 from fhc_api.review.router import router as review_router
@@ -25,7 +25,7 @@ from fhc_api.security import require_token
 from fhc_api.sources.router import event_sources_router
 from fhc_api.sources.router import router as sources_router
 from fhc_api.system.router import router as system_router
-from fhc_api.telegram.client import TelegramClient
+from fhc_api.telegram.client import TelegramClient, TelegramConfigError
 from fhc_api.telegram.router import build_telegram_router
 from fhc_api.web.revalidate import Revalidator, WebRevalidator
 
@@ -37,6 +37,19 @@ class HealthOut(BaseModel):
     service: str
 
 
+def _build_llm(settings: Settings, closers: list[Callable[[], None]]) -> LLMProvider:
+    try:
+        ollama = OllamaProvider(
+            settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL, settings.OLLAMA_TIMEOUT_S
+        )
+    except LLMConfigError as exc:
+        # The API stays up; /llm/check reports the (secret-free) configuration message.
+        logger.warning("LLM provider disabled: %s", exc)
+        return MisconfiguredProvider("ollama", settings.OLLAMA_MODEL, exc)
+    closers.append(ollama.close)
+    return ollama
+
+
 def create_app(
     settings: Settings,
     *,
@@ -46,15 +59,22 @@ def create_app(
     telegram_client: TelegramClient | None = None,
 ) -> FastAPI:
     pool = create_pool(settings.DATABASE_URL.get_secret_value())
-    # Integration clients are created once per app and closed on shutdown.
+    # Integration clients are created once per app and closed on shutdown (`closers`).
     # Injected instances (tests) are owned and closed by the caller.
-    own_llm = llm_provider is None
-    llm: LLMProvider = llm_provider or OllamaProvider(
-        settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL, settings.OLLAMA_TIMEOUT_S
-    )
-    own_telegram = telegram_client is None
-    token = settings.TELEGRAM_BOT_TOKEN.get_secret_value() if settings.TELEGRAM_BOT_TOKEN else ""
-    telegram = telegram_client or (TelegramClient(token) if token else None)
+    closers: list[Callable[[], None]] = [pool.close]
+    llm = llm_provider or _build_llm(settings, closers)
+    invalid_telegram_token = False
+    telegram = telegram_client
+    if telegram is None and settings.TELEGRAM_BOT_TOKEN:
+        try:
+            telegram = TelegramClient(settings.TELEGRAM_BOT_TOKEN.get_secret_value())
+        except TelegramConfigError:
+            # A bad optional integration must not take the API down; /telegram/check
+            # reports it. The message never contains the token.
+            logger.warning("Telegram disabled: TELEGRAM_BOT_TOKEN has an invalid format")
+            invalid_telegram_token = True
+        else:
+            closers.append(telegram.close)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -63,14 +83,11 @@ def create_app(
         pool.open(wait=False)
         revalidation = settings.WEB_BASE_URL and settings.WEB_REVALIDATE_SECRET
         logger.info("web revalidation %s", "enabled" if revalidation else "disabled")
-        try:
+        # ExitStack runs every close (in reverse order) even when an earlier one raises.
+        with ExitStack() as stack:
+            for close in closers:
+                stack.callback(close)
             yield
-        finally:
-            pool.close()
-            if own_llm and isinstance(llm, OllamaProvider):
-                llm.close()
-            if own_telegram and telegram is not None:
-                telegram.close()
 
     app = FastAPI(
         title="FHC Admin API",
@@ -106,7 +123,11 @@ def create_app(
         community_router,
         system_router,
         build_llm_router(lambda: llm),
-        build_telegram_router(lambda: telegram, settings.TELEGRAM_CHANNEL_ID),
+        build_telegram_router(
+            lambda: telegram,
+            settings.TELEGRAM_CHANNEL_ID,
+            invalid_token_format=invalid_telegram_token,
+        ),
     ):
         protected.include_router(router)
 

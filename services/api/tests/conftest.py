@@ -9,6 +9,7 @@ read here, so tests cannot reach a cloud database by accident.
 
 import os
 from collections.abc import Iterator
+from contextlib import contextmanager
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -19,7 +20,7 @@ from fastapi.testclient import TestClient
 from psycopg.rows import dict_row
 
 from fhc_api.config import Settings
-from fhc_api.db import Conn, get_conn
+from fhc_api.db import Conn, get_conn, get_conn_factory
 from fhc_api.main import create_app
 from fhc_api.review.signals import UrlCheck
 
@@ -109,6 +110,7 @@ def client(app: FastAPI, db: Conn) -> TestClient:
             yield db
 
     app.dependency_overrides[get_conn] = conn_in_savepoint
+    app.dependency_overrides[get_conn_factory] = lambda: contextmanager(conn_in_savepoint)
     return TestClient(app, base_url=BASE_URL, headers=AUTH)
 
 

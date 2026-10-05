@@ -58,6 +58,8 @@ class WebRevalidator:
                 transport=self._transport,
                 timeout=httpx2.Timeout(TIMEOUT_SECONDS),
                 follow_redirects=False,
+                # The bearer secret must never go through an environment proxy.
+                trust_env=False,
             ) as client:
                 response = client.post(
                     self._endpoint,

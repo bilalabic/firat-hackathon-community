@@ -1,6 +1,7 @@
 import json
 import logging
 from collections.abc import Callable
+from typing import Any
 
 import httpx2
 import pytest
@@ -79,3 +80,19 @@ def test_network_errors_are_swallowed(caplog: pytest.LogCaptureFixture) -> None:
 
     assert "web revalidation failed: ConnectError" in caplog.text
     assert SECRET not in caplog.text
+
+
+def test_environment_proxies_are_ignored(monkeypatch: pytest.MonkeyPatch) -> None:
+    # The bearer secret must never go through an environment proxy. (httpx2 also skips
+    # environment proxies when a transport is injected, so check the constructor call.)
+    client_kwargs: list[dict[str, Any]] = []
+    real_client = httpx2.Client
+
+    def recording_client(**kwargs: Any) -> httpx2.Client:
+        client_kwargs.append(kwargs)
+        return real_client(**kwargs)
+
+    monkeypatch.setattr(httpx2, "Client", recording_client)
+    revalidator(httpx2.MockTransport(lambda request: httpx2.Response(200))).revalidate(["e"])
+
+    assert [kwargs.get("trust_env") for kwargs in client_kwargs] == [False]

@@ -60,3 +60,36 @@ class LLMProvider(Protocol):
     ) -> str: ...
 
     def health(self) -> ProviderHealth: ...
+
+
+class MisconfiguredProvider:
+    """Stands in for a provider whose configuration was rejected at startup, so the API
+    stays up: `health()` reports `error` with the (secret-free) configuration message and
+    every generation call raises LLMConfigError."""
+
+    def __init__(self, name: str, configured_model: str, error: LLMConfigError) -> None:
+        self._name = name
+        self._configured_model = configured_model
+        self._message = str(error)
+
+    @property
+    def name(self) -> str:
+        return self._name
+
+    def generate_structured(
+        self, *, system: str, user: str, schema: type[T], temperature: float = 0.0
+    ) -> T:
+        raise LLMConfigError(self._message)
+
+    def generate_text(
+        self, *, system: str, user: str, max_tokens: int, temperature: float = 0.0
+    ) -> str:
+        raise LLMConfigError(self._message)
+
+    def health(self) -> ProviderHealth:
+        return ProviderHealth(
+            provider=self._name,
+            status="error",
+            configured_model=self._configured_model,
+            message=f"Configuration error: {self._message}",
+        )
