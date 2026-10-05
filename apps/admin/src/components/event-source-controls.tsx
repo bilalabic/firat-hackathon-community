@@ -6,6 +6,7 @@ import { toast } from "sonner"
 
 import { FormMessage } from "@/components/api-error-state"
 import { FormField } from "@/components/form-field"
+import { useFocusOnError } from "@/hooks/use-focus-on-error"
 import {
   AlertDialog,
   AlertDialogCancel,
@@ -26,11 +27,12 @@ export type SourceOption = { id: string; label: string }
 
 export function AddEventSourceForm({ eventId, sources }: { eventId: string; sources: SourceOption[] }) {
   const [state, formAction, pending] = useActionState(addEventSource.bind(null, eventId), IDLE)
+  const formRef = useFocusOnError(state)
   const values = state.status === "error" ? (state.values ?? {}) : {}
   const errors = state.status === "error" ? (state.fieldErrors ?? {}) : {}
 
   return (
-    <form action={formAction} className="grid gap-3" aria-busy={pending}>
+    <form ref={formRef} action={formAction}className="grid gap-3" aria-busy={pending}>
       <div key={JSON.stringify(values)} className="grid gap-3 @xl/main:grid-cols-[2fr_1fr_1fr]">
         <FormField id="event-source-url" label="URL" required error={errors.url}>
           {(control) => (

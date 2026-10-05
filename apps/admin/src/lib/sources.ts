@@ -84,16 +84,35 @@ export function readSourceForm(formData: FormData): SourceFormValues {
   }
 }
 
-/** Full source body (create, and PATCH of every editable field). The API validates enums. */
-export function buildSourcePayload(values: SourceFormValues): SourceCreate {
-  return {
+function oneOf<T extends string | number>(value: T | string | number, options: readonly T[]): T | undefined {
+  return options.find((option) => option === value)
+}
+
+/**
+ * Full source body (create, and PATCH of every editable field). Enum values are checked
+ * against the lists above; the API validates everything again.
+ */
+export function buildSourcePayload(values: SourceFormValues): {
+  payload: SourceCreate
+  fieldErrors: Record<string, string>
+} {
+  const fieldErrors: Record<string, string> = {}
+  const kind = oneOf(values.kind, SOURCE_KINDS)
+  const tier = oneOf(Number(values.tier), TIERS)
+  const method = oneOf(values.retrieval_method, RETRIEVAL_METHODS)
+  if (!kind) fieldErrors.kind = "Choose a kind."
+  if (!tier) fieldErrors.tier = "Choose a tier."
+  if (!method) fieldErrors.retrieval_method = "Choose a retrieval method."
+  const payload: SourceCreate = {
     name: values.name.trim(),
-    kind: values.kind as SourceKind,
-    tier: Number(values.tier) as SourceCreate["tier"],
+    kind: kind ?? "manual",
+    tier: tier ?? 4,
     base_url: values.base_url.trim() || null,
-    retrieval_method: values.retrieval_method as RetrievalMethod,
+    retrieval_method: method ?? "manual",
     enabled: values.enabled,
     requires_js: values.requires_js,
-    notes: values.notes.trim() || null,
+    // Textareas submit CRLF line breaks; store LF.
+    notes: values.notes.replace(/\r\n?/g, "\n").trim() || null,
   }
+  return { payload, fieldErrors }
 }

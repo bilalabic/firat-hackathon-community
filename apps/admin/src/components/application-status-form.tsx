@@ -11,7 +11,8 @@ import { APPLICATION_STATUSES, APPLICATION_STATUS_LABELS } from "@/lib/applicati
 
 /**
  * Status select + Save (an explicit button, so arrow keys on the select do not send
- * several updates). Receives the id and status only, no personal data.
+ * several updates). Receives the id, the status and the select's accessible label,
+ * which contains the applicant's name; no other application data.
  */
 export function ApplicationStatusForm({
   kind,

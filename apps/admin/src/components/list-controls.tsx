@@ -1,11 +1,12 @@
 // Server-rendered filter links and pager for list pages (state lives in the URL).
 
 import Link from "next/link"
+import { redirect } from "next/navigation"
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react"
 import { cn } from "cn"
 
 import { buttonVariants } from "@/components/ui/button"
-import { hrefWith } from "@/lib/paging"
+import { hrefWith, lastPage } from "@/lib/paging"
 
 export type FilterOption = { label: string; href: string; active: boolean }
 
@@ -40,10 +41,12 @@ export function Pager({
   limit: number
   total: number
 }) {
-  const pages = Math.max(1, Math.ceil(total / limit))
+  const pages = lastPage(total, limit)
+  const link = (target: number) => hrefWith(path, { ...params, page: target > 1 ? target : undefined })
+  // Past the end (e.g. after rows were removed, or a hand-edited URL): go to the last page.
+  if (page > pages) redirect(link(pages))
   const from = total === 0 ? 0 : (page - 1) * limit + 1
   const to = Math.min(total, page * limit)
-  const link = (target: number) => hrefWith(path, { ...params, page: target > 1 ? target : undefined })
   const button = cn(buttonVariants({ variant: "outline", size: "sm" }))
   const disabled = cn(button, "pointer-events-none opacity-50")
 

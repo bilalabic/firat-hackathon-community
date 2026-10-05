@@ -3,7 +3,7 @@
 // State-machine actions for one event. Only the actions the API lists in
 // `allowed_actions` are offered; guards are still checked by the API (409).
 
-import { useId, useState, useTransition } from "react"
+import { useEffect, useId, useRef, useState, useTransition, type RefObject } from "react"
 import Link from "next/link"
 import { CircleAlertIcon, EllipsisVerticalIcon } from "lucide-react"
 import { toast } from "sonner"
@@ -32,9 +32,33 @@ import { transitionEvent } from "@/lib/actions/events"
 import type { EventAction } from "@/lib/api/types"
 import { ACTION_META, needsDialog } from "@/lib/events"
 
-function useEventTransition(eventId: string) {
+/** The first enabled button inside `element`, else the element itself (if still on the page). */
+function focusableIn(element: HTMLElement | null): HTMLElement | null {
+  if (!element?.isConnected) return null
+  if (element.matches("button:not(:disabled)")) return element
+  return element.querySelector<HTMLElement>("button:not(:disabled)") ?? element
+}
+
+/**
+ * Sends a transition. When it settles and focus was lost (the clicked button was
+ * disabled while pending, or removed because the status changed), focus moves to
+ * `focusTarget` (its first enabled button, or the element itself).
+ */
+function useEventTransition(eventId: string, focusTarget: RefObject<HTMLElement | null>) {
   const [pending, startTransition] = useTransition()
   const [error, setError] = useState<string | null>(null)
+  const wasPending = useRef(false)
+
+  useEffect(() => {
+    if (wasPending.current && !pending) {
+      const active = document.activeElement
+      if (!active || active === document.body || !active.isConnected) {
+        focusableIn(focusTarget.current)?.focus()
+      }
+    }
+    wasPending.current = pending
+  }, [pending, focusTarget])
+
   const run = (action: EventAction, reason?: string) =>
     startTransition(async () => {
       const result = await transitionEvent({ eventId, action, reason })
@@ -52,35 +76,52 @@ function useEventTransition(eventId: string) {
 function TransitionDialog({
   action,
   eventTitle,
-  onOpenChange,
+  returnFocus,
+  fallbackFocus,
+  onClose,
   onConfirm,
 }: {
   action: EventAction | null
   eventTitle: string
-  onOpenChange: (open: boolean) => void
+  /** Where focus goes when the dialog closes (Esc, Cancel or confirm). */
+  returnFocus: RefObject<HTMLElement | null>
+  /** Used when `returnFocus` is gone or disabled (e.g. while the action is pending). */
+  fallbackFocus: RefObject<HTMLElement | null>
+  onClose: () => void
   onConfirm: (action: EventAction, reason?: string) => void
 }) {
   const reasonId = useId()
   const [reason, setReason] = useState("")
-  const meta = action ? ACTION_META[action] : null
+  // Keep the last action rendered while the dialog animates out, so the popup stays
+  // mounted and Base UI can restore focus.
+  const [shown, setShown] = useState<EventAction | null>(action)
+  if (action !== null && action !== shown) setShown(action)
+  const meta = shown ? ACTION_META[shown] : null
 
   return (
     <AlertDialog
       open={action !== null}
       onOpenChange={(open) => {
-        if (!open) setReason("")
-        onOpenChange(open)
+        if (!open) {
+          setReason("")
+          onClose()
+        }
       }}
     >
-      {action && meta && (
-        <AlertDialogContent className="data-[size=default]:sm:max-w-md">
+      {shown && meta && (
+        <AlertDialogContent className="data-[size=default]:sm:max-w-md" finalFocus={() => {
+            const opener = returnFocus.current
+            if (opener?.isConnected && !opener.matches(":disabled")) return opener
+            return focusableIn(fallbackFocus.current) ?? true
+          }}
+        >
           <form
             className="grid gap-4"
             onSubmit={(event) => {
               event.preventDefault()
-              onConfirm(action, reason.trim() || undefined)
+              onConfirm(shown, reason.trim() || undefined)
               setReason("")
-              onOpenChange(false)
+              onClose()
             }}
           >
             <AlertDialogHeader>
@@ -132,12 +173,21 @@ export function EventActionsBar({
   eventTitle: string
   actions: EventAction[]
 }) {
-  const { pending, error, run } = useEventTransition(eventId)
+  const groupRef = useRef<HTMLDivElement>(null)
+  const openerRef = useRef<HTMLElement | null>(null)
+  const { pending, error, run } = useEventTransition(eventId, groupRef)
   const [dialog, setDialog] = useState<EventAction | null>(null)
 
   return (
     <div className="grid gap-3">
-      <div className="flex flex-wrap items-center gap-2" aria-busy={pending}>
+      <div
+        ref={groupRef}
+        role="group"
+        aria-label="Status actions"
+        tabIndex={-1}
+        className="flex flex-wrap items-center gap-2 outline-none"
+        aria-busy={pending}
+      >
         {actions.length === 0 && (
           <span className="text-sm text-muted-foreground">No status changes are possible from here.</span>
         )}
@@ -147,7 +197,11 @@ export function EventActionsBar({
             size="sm"
             variant={ACTION_META[action].destructive ? "destructive" : "outline"}
             disabled={pending}
-            onClick={() => (needsDialog(action) ? setDialog(action) : run(action))}
+            onClick={(event) => {
+              openerRef.current = event.currentTarget
+              if (needsDialog(action)) setDialog(action)
+              else run(action)
+            }}
           >
             {ACTION_META[action].label}
           </Button>
@@ -163,7 +217,9 @@ export function EventActionsBar({
       <TransitionDialog
         action={dialog}
         eventTitle={eventTitle}
-        onOpenChange={(open) => !open && setDialog(null)}
+        returnFocus={openerRef}
+        fallbackFocus={groupRef}
+        onClose={() => setDialog(null)}
         onConfirm={run}
       />
     </div>
@@ -180,7 +236,8 @@ export function EventRowActions({
   eventTitle: string
   actions: EventAction[]
 }) {
-  const { pending, run } = useEventTransition(eventId)
+  const triggerRef = useRef<HTMLButtonElement>(null)
+  const { pending, run } = useEventTransition(eventId, triggerRef)
   const [dialog, setDialog] = useState<EventAction | null>(null)
 
   return (
@@ -189,6 +246,7 @@ export function EventRowActions({
         <DropdownMenuTrigger
           render={
             <Button
+              ref={triggerRef}
               variant="ghost"
               className="flex size-8 text-muted-foreground data-open:bg-muted"
               size="icon"
@@ -217,7 +275,9 @@ export function EventRowActions({
       <TransitionDialog
         action={dialog}
         eventTitle={eventTitle}
-        onOpenChange={(open) => !open && setDialog(null)}
+        returnFocus={triggerRef}
+        fallbackFocus={triggerRef}
+        onClose={() => setDialog(null)}
         onConfirm={run}
       />
     </>

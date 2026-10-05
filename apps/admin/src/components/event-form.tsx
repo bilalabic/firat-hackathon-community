@@ -4,6 +4,7 @@ import { useActionState } from "react"
 
 import { FormMessage } from "@/components/api-error-state"
 import { FormField, type ControlProps } from "@/components/form-field"
+import { useFocusOnError } from "@/hooks/use-focus-on-error"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
 import { Input } from "@/components/ui/input"
@@ -51,11 +52,12 @@ export function EventForm({
   submitLabel: string
 }) {
   const [state, formAction, pending] = useActionState(action, IDLE)
+  const formRef = useFocusOnError(state)
   const values = state.status === "error" && state.values ? state.values : initialValues
   const errors = state.status === "error" ? (state.fieldErrors ?? {}) : {}
 
   return (
-    <form action={formAction} className="grid gap-4" aria-busy={pending}>
+    <form ref={formRef} action={formAction}className="grid gap-4" aria-busy={pending}>
       {/* Remount the fields when the values change so selects pick up new defaults. */}
       <div key={JSON.stringify(values)} className="grid gap-4 @4xl/main:grid-cols-2">
         {EVENT_FIELD_GROUPS.map((group) => (

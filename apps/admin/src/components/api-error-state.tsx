@@ -35,7 +35,7 @@ export function FormMessage({
   if (!message || status === "idle") return null
   if (status === "error") {
     return (
-      <Alert variant="destructive">
+      <Alert variant="destructive" tabIndex={-1} className="outline-none focus-visible:ring-3 focus-visible:ring-ring/50">
         <CircleAlertIcon />
         <AlertDescription>{message}</AlertDescription>
       </Alert>

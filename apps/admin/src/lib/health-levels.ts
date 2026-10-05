@@ -55,9 +55,12 @@ export const TELEGRAM_STATUS_TEXT: Record<TelegramCheck["status"], string> = {
 
 export function telegramHealth(result: ApiResult<TelegramCheck>): HealthSummary {
   if (!result.ok) return apiFailed(result)
-  const { status, message, missing_optional_rights } = result.data
+  const { status, message, missing_optional_rights, excess_rights } = result.data
   const text = `${TELEGRAM_STATUS_TEXT[status]}: ${message}`
   if (status === "not_configured") return { level: "off", text }
-  if (status === "ok") return { level: missing_optional_rights?.length ? "warn" : "ok", text }
+  // Excess rights (least privilege) and missing optional rights do not block, but need attention.
+  if (status === "ok") {
+    return { level: missing_optional_rights?.length || excess_rights?.length ? "warn" : "ok", text }
+  }
   return { level: "error", text }
 }

@@ -10,8 +10,6 @@ import { z } from "zod"
 import { api } from "@/lib/api/client"
 import type { EventAction, EventSourceRole } from "@/lib/api/types"
 import {
-  asEventCreate,
-  asEventUpdate,
   buildEventPayload,
   changedFields,
   readEventForm,
@@ -31,7 +29,7 @@ export async function createEvent(_prev: FormState, formData: FormData): Promise
   if (Object.keys(fieldErrors).length > 0) {
     return { status: "error", message: LOCAL_INVALID, fieldErrors, values }
   }
-  const result = await api.createEvent(asEventCreate(payload))
+  const result = await api.createEvent(payload)
   if (!result.ok) {
     return {
       status: "error",
@@ -64,7 +62,7 @@ export async function updateEvent(
     return { status: "success", message: "No changes to save." }
   }
 
-  const result = await api.updateEvent(eventId, asEventUpdate(changes))
+  const result = await api.updateEvent(eventId, changes)
   if (!result.ok) {
     return {
       status: "error",

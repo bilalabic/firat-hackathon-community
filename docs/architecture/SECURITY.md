@@ -44,7 +44,7 @@ Every app ships a committed `.env.example` with names only. The API's error hand
 A malicious website open in the same browser can send requests to `http://localhost:8000` (CSRF) or use DNS rebinding.
 - FastAPI binds `127.0.0.1` only, uses `TrustedHostMiddleware` (rejects rebinding hosts), and requires `Authorization: Bearer` on every route except `/health`. A cross-site form cannot set this header.
 - No CORS middleware. With no `Access-Control-Allow-Origin`, a browser cannot read responses.
-- Admin Next.js binds `127.0.0.1`. Server Actions include Next.js's built-in Origin/Host check.
+- Admin Next.js binds `127.0.0.1` and has no login, so it must not answer a rebinding host. `apps/admin/src/proxy.ts` runs before every request (pages, Server Actions, `/api/health`, assets) and returns **400** unless `Host` names an allowed host, and `X-Forwarded-Host` and `Origin`, when present, do too (an opaque `Origin: null` is rejected). Allowed hosts come from `ADMIN_ALLOWED_HOSTS` (comma-separated, `name` = any port or `name:port` = exact); the default is `127.0.0.1,localhost`. This matters because Next.js's own Server Action CSRF check only compares `Origin` with `X-Forwarded-Host`/`Host`, which a rebinding page controls together. `experimental.serverActions.allowedOrigins` is set explicitly to `[]` (same origin only).
 - Ollama: keep the default localhost binding (do **not** set `OLLAMA_HOST=0.0.0.0`).
 
 ## 5. Untrusted content (crawler / LLM)

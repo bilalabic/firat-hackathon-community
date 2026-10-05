@@ -97,6 +97,27 @@ describe("changedFields", () => {
     expect(changedFields(payload, event)).toEqual({})
   })
 
+  it("ignores CRLF line breaks from textareas when the API stores LF", () => {
+    const stored = { ...event, description: "Line one\nLine two", internal_notes: "[a] x\n[b] y" }
+    const { payload } = buildEventPayload({
+      ...eventToFormValues(stored),
+      description: "Line one\r\nLine two",
+      internal_notes: "[a] x\r\n[b] y\r\n",
+    })
+    expect(payload.description).toBe("Line one\nLine two")
+    expect(changedFields(payload, stored)).toEqual({})
+  })
+
+  it("sends LF when a multi-line field really changed", () => {
+    const { payload } = buildEventPayload({ ...eventToFormValues(event), description: "A\r\nB" })
+    expect(changedFields(payload, event)).toEqual({ description: "A\nB" })
+  })
+
+  it("reports an unknown select value instead of sending it", () => {
+    const { fieldErrors } = buildEventPayload({ ...EMPTY_EVENT_VALUES, format: "teleport" })
+    expect(fieldErrors.format).toBeDefined()
+  })
+
   it("returns only edited fields, with null for cleared ones", () => {
     const { payload } = buildEventPayload({ ...eventToFormValues(event), summary: "", city: "Elazığ" })
     expect(changedFields(payload, event)).toEqual({ summary: null, city: "Elazığ" })

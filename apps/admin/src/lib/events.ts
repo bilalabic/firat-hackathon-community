@@ -55,7 +55,10 @@ export const ACTION_META: Record<EventAction, ActionMeta> = {
     confirm: "The event goes back to Draft. An optional reason is appended to its internal notes.",
     reason: "optional",
   },
-  publish: { label: "Publish" },
+  publish: {
+    label: "Publish",
+    confirm: "The event appears on the public site, which is asked to revalidate.",
+  },
   unpublish: {
     label: "Unpublish",
     confirm: "The event is removed from the public site and goes back to Approved.",

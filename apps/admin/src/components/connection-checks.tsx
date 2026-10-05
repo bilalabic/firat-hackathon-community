@@ -159,6 +159,7 @@ export async function TelegramCheck() {
             ["Chat type", data.chat_type ?? "—"],
             ["Missing rights", (data.missing_rights ?? []).join(", ") || "None"],
             ["Missing optional rights", (data.missing_optional_rights ?? []).join(", ") || "None"],
+            ["Unneeded rights granted", (data.excess_rights ?? []).join(", ") || "None"],
           ]}
         />
       )}

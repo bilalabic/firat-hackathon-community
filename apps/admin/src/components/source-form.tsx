@@ -4,6 +4,7 @@ import { useActionState } from "react"
 
 import { FormMessage } from "@/components/api-error-state"
 import { FormField } from "@/components/form-field"
+import { useFocusOnError } from "@/hooks/use-focus-on-error"
 import { Button } from "@/components/ui/button"
 import { Card, CardContent } from "@/components/ui/card"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -43,11 +44,12 @@ export function SourceForm({
   submitLabel: string
 }) {
   const [state, formAction, pending] = useActionState(action, IDLE)
+  const formRef = useFocusOnError(state)
   const values = state.status === "error" && state.values ? fromEcho(state.values) : initialValues
   const errors = state.status === "error" ? (state.fieldErrors ?? {}) : {}
 
   return (
-    <form action={formAction} className="grid max-w-3xl gap-4" aria-busy={pending}>
+    <form ref={formRef} action={formAction}className="grid max-w-3xl gap-4" aria-busy={pending}>
       <Card>
         <CardContent key={JSON.stringify(values)} className="grid gap-4 sm:grid-cols-2">
           <FormField id="source-name" label="Name" required error={errors.name}>

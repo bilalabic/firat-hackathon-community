@@ -8,7 +8,7 @@ Two processes on the developer laptop: **Admin UI** (`apps/admin`, Next.js) and 
 - Geist font, Lucide icons (both are shadcn defaults).
 - Runs `next dev -p 3001 -H 127.0.0.1` (dev) or `next start -p 3001 -H 127.0.0.1`.
 - All data access happens **server-side** (Server Components / Server Actions) through a small typed client for FastAPI. Types are generated from FastAPI's OpenAPI with `openapi-typescript`. The browser never talks to FastAPI.
-- Env (`apps/admin/.env.local`): `ADMIN_API_URL=http://127.0.0.1:8000`, `ADMIN_API_TOKEN=<random 32 bytes>`. Nothing else.
+- Env (`apps/admin/.env.local`): `ADMIN_API_URL=http://127.0.0.1:8000`, `ADMIN_API_TOKEN=<random 32 bytes>`; optional `ADMIN_ALLOWED_HOSTS` (default `127.0.0.1,localhost`, see SECURITY §4). Nothing else.
 
 ### dashboard-01 adaptation
 
@@ -68,10 +68,13 @@ No LLM confidence percentages are shown, now or later.
 
 - `src/lib/api/client.ts` (`server-only`) is the only place that reads `ADMIN_API_URL` / `ADMIN_API_TOKEN`. Every call returns `{ok, data} | {ok: false, error}`; errors carry an English message (unreachable, timeout, 401, 404, 409, 422 with per-field messages, 503). Pages render that state instead of throwing. Bodies are never logged.
 - `src/lib/api/schema.ts` is generated: `pnpm --filter admin run api:types` with the API running and the token in `apps/admin/.env.local` (the script fetches `/openapi.json` with the bearer token and runs openapi-typescript's Node API, because its CLI cannot send headers).
-- Row actions and buttons come from the event's `allowed_actions`. Reject, request changes, unpublish and archive open a dialog (reason required for reject, optional for request changes). A 409 is shown inline and the page is re-rendered so the offered actions match the current status.
-- The edit form PATCHes only the fields that changed, so an unchanged save does not bump `updated_at` or revalidate the public site.
-- Header health dots: API (`/health`) and DB (`/system/db`) on every page; Ollama and Telegram results are reused for 5 minutes (the Ollama check runs a test generation). Settings always runs them fresh.
-- Unit tests (`pnpm --filter admin run test`, vitest) cover the pure helpers: error mapping, form ⇄ payload conversion and diffing, health levels, paging, URL safety.
+- `src/proxy.ts` rejects (400) any request whose Host / X-Forwarded-Host / Origin is not an allowed admin host (DNS rebinding, SECURITY §4).
+- Row actions and buttons come from the event's `allowed_actions`. Publish, reject, request changes, unpublish and archive open a confirmation dialog (reason required for reject, optional for request changes); approve, submit and reopen are one click. A 409 is shown inline and the page is re-rendered so the offered actions match the current status. Focus returns to the action buttons after a dialog closes or an action completes, and to the first invalid field (or the error message) after a failed form submit.
+- The edit form PATCHes only the fields that changed (textarea CRLF line breaks are normalized to LF before comparing and sending), so an unchanged save does not bump `updated_at` or revalidate the public site.
+- Lists: `?page=` above 10 000 or not a plain number falls back to 1; a page past the end redirects to the last page.
+- Timestamps are shown in Europe/Istanbul; event dates as stored (YYYY-MM-DD).
+- Header health dots: API (`/health`) and DB (`/system/db`) on every page; Ollama and Telegram results are reused for 5 minutes (the Ollama check runs a test generation). Settings always runs them fresh, sharing a check that is still running, so one page load starts at most one test generation. The Telegram card lists missing, missing optional and unneeded (excess) rights.
+- Unit tests (`pnpm --filter admin run test`, vitest) cover the pure helpers: host allow-list, error mapping, form ⇄ payload conversion and diffing (incl. CRLF), source payload, health levels, paging, date formatting, URL safety.
 
 ## 2. API (`services/api`)
 

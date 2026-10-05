@@ -997,6 +997,8 @@ export type components = {
             missing_rights?: string[];
             /** Missing Optional Rights */
             missing_optional_rights?: string[];
+            /** Excess Rights */
+            excess_rights?: string[];
         };
         /** TierCount */
         TierCount: {

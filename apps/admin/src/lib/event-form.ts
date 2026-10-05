@@ -2,16 +2,19 @@
 // for validation; this layer only converts form strings to JSON types and catches
 // input that cannot be converted (e.g. "abc" for a team size).
 
-import type { Event, EventCreate, EventUpdate } from "@/lib/api/types"
+import type { Event, EventCreate, EventFormat, EventUpdate, VerificationStatus } from "@/lib/api/types"
 
 export type FormValues = Record<string, string>
+
+/** Editable event fields: keys of the generated EventCreate body. */
+type EventFieldName = keyof EventCreate & keyof Event
 
 type FieldKind = "text" | "textarea" | "url" | "date" | "integer" | "decimal" | "tags" | "select" | "boolean"
 
 export type FieldOption = { value: string; label: string }
 
 export type EventField = {
-  name: keyof EventUpdate & string
+  name: EventFieldName
   label: string
   kind: FieldKind
   /** Cannot be empty (the API rejects null). */
@@ -115,7 +118,7 @@ export const EMPTY_EVENT_VALUES: FormValues = {
 export function eventToFormValues(event: Event): FormValues {
   const values: FormValues = {}
   for (const field of EVENT_FIELDS) {
-    const value = event[field.name as keyof Event]
+    const value = event[field.name]
     if (value === null || value === undefined) values[field.name] = ""
     else if (Array.isArray(value)) values[field.name] = value.join(", ")
     else values[field.name] = String(value)
@@ -133,8 +136,10 @@ export function readEventForm(formData: FormData): FormValues {
   return values
 }
 
-type PayloadValue = string | number | boolean | string[] | null
-export type EventPayload = Record<string, PayloadValue>
+/** Browsers submit textarea line breaks as CRLF; the API stores LF. */
+export function normalizeText(value: string): string {
+  return value.replace(/\r\n?/g, "\n").trim()
+}
 
 function parseTags(text: string): string[] {
   const tags = text
@@ -144,71 +149,106 @@ function parseTags(text: string): string[] {
   return [...new Set(tags)]
 }
 
+const FORMATS: readonly EventFormat[] = ["in_person", "online", "hybrid"]
+const VERIFICATIONS: readonly VerificationStatus[] = ["unverified", "partially_verified", "verified"]
+
+function isOneOf<T extends string>(value: string, options: readonly T[]): value is T {
+  return (options as readonly string[]).includes(value)
+}
+
 /**
- * Converts form strings to API JSON. Empty optional fields become null (clears them on
- * PATCH). Required text fields are sent as typed, so the API reports them per field.
+ * Converts form strings to the API body. Every field is listed explicitly against the
+ * generated `EventCreate` type, so a renamed or removed API field fails `tsc`. Empty
+ * optional fields become null (clears them on PATCH); required text is sent as typed so
+ * the API reports it per field.
  */
 export function buildEventPayload(values: FormValues): {
-  payload: EventPayload
+  payload: EventCreate
   fieldErrors: Record<string, string>
 } {
-  const payload: EventPayload = {}
   const fieldErrors: Record<string, string> = {}
+  const raw = (name: EventFieldName) => normalizeText(values[name] ?? "")
+  const optional = (name: EventFieldName) => raw(name) || null
+  const upper = (name: EventFieldName) => raw(name).toUpperCase() || null
+  const integer = (name: EventFieldName) => {
+    const text = raw(name)
+    if (text === "") return null
+    if (/^\d+$/.test(text)) return Number(text)
+    fieldErrors[name] = "Enter a whole number."
+    return null
+  }
+  const decimal = (name: EventFieldName) => {
+    const text = raw(name)
+    if (text === "") return null
+    if (/^\d+(\.\d{1,2})?$/.test(text)) return text
+    fieldErrors[name] = "Enter an amount such as 5000 or 5000.50."
+    return null
+  }
+  const boolean = (name: EventFieldName) => (raw(name) === "" ? null : raw(name) === "true")
 
-  for (const field of EVENT_FIELDS) {
-    const text = (values[field.name] ?? "").trim()
-    switch (field.kind) {
-      case "tags":
-        payload[field.name] = parseTags(text)
-        break
-      case "integer":
-        if (text === "") payload[field.name] = null
-        else if (/^\d+$/.test(text)) payload[field.name] = Number(text)
-        else fieldErrors[field.name] = "Enter a whole number."
-        break
-      case "decimal":
-        if (text === "") payload[field.name] = null
-        else if (/^\d+(\.\d{1,2})?$/.test(text)) payload[field.name] = text
-        else fieldErrors[field.name] = "Enter an amount such as 5000 or 5000.50."
-        break
-      case "boolean":
-        payload[field.name] = text === "" ? null : text === "true"
-        break
-      default:
-        if (field.name === "country" || field.name === "currency") {
-          payload[field.name] = text === "" ? null : text.toUpperCase()
-        } else {
-          payload[field.name] = text === "" && !field.required ? null : text
-        }
-    }
+  const format = raw("format")
+  if (format !== "" && !isOneOf(format, FORMATS)) fieldErrors.format = "Choose a format."
+  const verification = raw("verification_status")
+  if (!isOneOf(verification, VERIFICATIONS)) {
+    fieldErrors.verification_status = "Choose a verification status."
+  }
+
+  const payload: EventCreate = {
+    title: raw("title"),
+    organizer: optional("organizer"),
+    summary: optional("summary"),
+    description: optional("description"),
+    categories: parseTags(raw("categories")),
+    technologies: parseTags(raw("technologies")),
+    format: isOneOf(format, FORMATS) ? format : null,
+    city: optional("city"),
+    country: upper("country"),
+    venue: optional("venue"),
+    start_date: optional("start_date"),
+    end_date: optional("end_date"),
+    application_deadline: optional("application_deadline"),
+    timezone: raw("timezone"),
+    eligibility: optional("eligibility"),
+    team_min: integer("team_min"),
+    team_max: integer("team_max"),
+    prize_pool: decimal("prize_pool"),
+    currency: upper("currency"),
+    is_free: boolean("is_free"),
+    official_url: raw("official_url"),
+    application_url: optional("application_url"),
+    poster_url: optional("poster_url"),
+    banner_url: optional("banner_url"),
+    organizer_logo_url: optional("organizer_logo_url"),
+    verification_status: isOneOf(verification, VERIFICATIONS) ? verification : "unverified",
+    internal_notes: optional("internal_notes"),
   }
   return { payload, fieldErrors }
 }
 
-function sameValue(next: PayloadValue, current: unknown): boolean {
+const NUMERIC = /^\d+(\.\d+)?$/
+
+function sameValue(next: unknown, current: unknown): boolean {
   if (Array.isArray(next)) {
     return Array.isArray(current) && next.join("\u0000") === current.join("\u0000")
   }
-  if (next === null || current === null || current === undefined) {
-    return next === null && (current === null || current === undefined)
+  if (next === null || next === undefined || current === null || current === undefined) {
+    return (next ?? null) === (current ?? null)
   }
-  // prize_pool comes back as "5000.00" (Decimal) while the form may send "5000".
-  if (typeof next === "string" && /^\d+(\.\d+)?$/.test(next) && typeof current === "string") {
-    return Number(next) === Number(current)
+  if (typeof next === "string" && typeof current === "string") {
+    // prize_pool comes back as "5000.00" (Decimal) while the form may send "5000".
+    if (NUMERIC.test(next) && NUMERIC.test(current)) return Number(next) === Number(current)
+    return normalizeText(next) === normalizeText(current)
   }
   return next === current
 }
 
 /** Only the fields that differ from the current event (PATCH body). */
-export function changedFields(payload: EventPayload, current: Event): EventPayload {
-  const changes: EventPayload = {}
-  for (const [name, value] of Object.entries(payload)) {
-    if (!sameValue(value, current[name as keyof Event])) changes[name] = value
+export function changedFields(payload: EventCreate, current: Event): EventUpdate {
+  const changes: EventUpdate = {}
+  const copy = <K extends EventFieldName>(key: K) => {
+    if (!sameValue(payload[key], current[key])) changes[key] = payload[key]
   }
+  for (const field of EVENT_FIELDS) copy(field.name)
   return changes
 }
 
-// The payload is built from EVENT_FIELDS, whose names are EventUpdate keys and whose
-// kinds produce the matching JSON types; the API validates every value again.
-export const asEventCreate = (payload: EventPayload) => payload as unknown as EventCreate
-export const asEventUpdate = (payload: EventPayload) => payload as unknown as EventUpdate

@@ -11,16 +11,20 @@ import type { LlmCheck, TelegramCheck } from "@/lib/api/types"
 
 const REUSE_MS = 5 * 60_000
 
-type Entry<T> = { at: number; result: Promise<ApiResult<T>> }
+type Entry<T> = { at: number; result: Promise<ApiResult<T>>; settled: boolean }
 
 function memo<T>(run: () => Promise<ApiResult<T>>) {
   let entry: Entry<T> | null = null
+  /** A new check, unless one is still running: then callers share it. */
   const fresh = () => {
+    if (entry && !entry.settled) return entry.result
     const result = run()
-    entry = { at: Date.now(), result }
-    // A failed check is not reused: the next page view retries it.
+    const current: Entry<T> = { at: Date.now(), result, settled: false }
+    entry = current
     void result.then((value) => {
-      if (!value.ok && entry?.result === result) entry = null
+      current.settled = true
+      // A failed check is not reused: the next page view retries it.
+      if (!value.ok && entry === current) entry = null
     })
     return result
   }
