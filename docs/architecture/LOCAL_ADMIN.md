@@ -55,28 +55,67 @@ No LLM confidence percentages are shown, now or later.
 
 ## 2. API (`services/api`)
 
-- Python 3.12+, `uv` project, FastAPI, Pydantic v2, pydantic-settings, psycopg 3 (pool), httpx2.
-- Runs `uv run uvicorn fhc_api.main:app --host 127.0.0.1 --port 8000` (via `pnpm dev`).
-- Middleware: `TrustedHostMiddleware(allowed_hosts=["127.0.0.1","localhost"])`, bearer-token dependency on every route except `/health`. No CORS middleware (no browser caller).
+- Python 3.12+, `uv` project, FastAPI, Pydantic v2, pydantic-settings, psycopg 3 (`psycopg[binary,pool]`), httpx2 (runtime, D-20).
+- Runs `uv run uvicorn fhc_api.main:create_app_from_env --factory --host 127.0.0.1 --port 8000` (via `pnpm dev`). `create_app(settings)` is the factory used by tests.
+- Middleware: `TrustedHostMiddleware(allowed_hosts=ALLOWED_HOSTS)` (default `["127.0.0.1","localhost"]`; foreign `Host` → 400), bearer-token dependency (`hmac.compare_digest`) on every route except `/health` (missing/wrong → 401). No CORS middleware (no browser caller).
+- No Swagger UI. The OpenAPI schema is served at `GET /openapi.json` **with the bearer token** (M4 generates TypeScript types from it). Every operation has an explicit snake_case `operationId` and documented error responses.
+- Sync endpoints + a sync `psycopg_pool.ConnectionPool` (autocommit connections; every write runs in an explicit `conn.transaction()` in the service, so it has committed before revalidation runs as a background task). The pool opens with `wait=False`: the API starts and `/health` answers when the DB is down; DB routes then return 503.
+- Errors are always `{"detail": ...}`: a string for API rules (404, 409, 422, 503), FastAPI's list of field errors for request validation (422). Postgres errors are mapped by class (unique → 409, check/FK → 422 with the constraint name, connection → 503) and are never echoed or logged verbatim (their messages can contain row values / personal data). A `pydantic.ValidationError` raised inside a handler (e.g. a row that no longer matches its response model) is a generic 500 `{"detail": "internal error"}`; only the error types and field locations are logged, never input values.
+
+### Endpoints
+
+All require `Authorization: Bearer <ADMIN_API_TOKEN>` except `/health`.
+
+| Method + path | operationId | Notes |
+|---|---|---|
+| `GET /health` | `health` | Unauthenticated |
+| `GET /overview` | `get_overview` | `in_review`, `published_upcoming` (last day ≥ today), `closing_within_7_days` (published, deadline today..today+7), `new_community_applications`, `new_team_applications`, `heartbeats` (both sources, `stale` when never seen or > 48 h). "Today" is per event timezone |
+| `GET /events` | `list_events` | `status` (repeatable), `upcoming`, `closing_within_days`, `limit` (1–200, default 50), `offset` → `{items,total,limit,offset}` ordered by `updated_at desc` |
+| `POST /events` | `create_event` | Creates a `draft`; slug from title (`slugify`, `-2`, `-3`… on collision, ≤ 80); `official_url_normalized` via `normalize_url` |
+| `GET /events/{id}` | `get_event` | Includes `allowed_actions` (from the state machine) |
+| `PATCH /events/{id}` | `update_event` | Partial; `null` clears optional fields. Slug never changes. Approved/published events must keep passing the approval checks (422). Editing a published event revalidates |
+| `POST /events/{id}/transitions` | `transition_event` | Body `{action, reason?}`; see state machine |
+| `GET /events/{id}/review` | `get_event_review` | Signals + duplicates + sources by tier; `check_url=false` skips the network check |
+| `GET/POST /events/{id}/sources` | `list_event_sources`, `add_event_source` | `url_normalized` via `normalize_url`; same normalized URL twice → 409 |
+| `DELETE /events/{id}/sources/{event_source_id}` | `remove_event_source` | 204 |
+| `GET/POST /sources`, `PATCH /sources/{id}` | `list_sources`, `create_source`, `update_source` | |
+| `GET /community-applications`, `PATCH /community-applications/{id}` | `list_community_applications`, `update_community_application` | Personal data: authenticated only, never logged. PATCH body `{status}` |
+| `GET /team-applications`, `PATCH /team-applications/{id}` | `list_team_applications`, `update_team_application` | Same |
+| `GET /system/db` | `check_database` | `{ok, latency_ms, role, server_version}`; 503 when the DB is unreachable |
+| `GET /llm/check` | `llm_check` | Provider health (`ok`, `not_running`, `model_missing`, `error`) plus one schema-constrained test call when healthy. A rejected `OLLAMA_*` configuration (e.g. a non-local URL) does not stop the API: health is `error` with the configuration message |
+| `GET /telegram/check` | `telegram_check` | `getMe` + `getChat` + `getChatMember`; status `not_configured`, `invalid_token` (also for a malformed `TELEGRAM_BOT_TOKEN`, which does not stop the API), `chat_not_found`, `bot_not_admin`, `missing_rights`, `ok` or `error`; plus `missing_rights`, `missing_optional_rights` (delete, information only) and `excess_rights` (rights V1 does not need, warning only) |
+| `GET /openapi.json` | (not in the schema) | The OpenAPI schema; requires the token like every other route |
 
 ### Module layout
 
 ```text
 services/api/src/fhc_api/   (uv packaged layout; tests in services/api/tests/)
 ├── main.py              app factory, middleware, routers
-├── config.py            Settings (pydantic-settings, reads .env)
-├── db.py                pool + transaction helper
+├── config.py            Settings (pydantic-settings, reads services/api/.env)
+├── db.py                pool + per-request connection dependency
 ├── security.py          token check
-├── common/              normalize.py (slug, url, turkish folding), clock.py (today in tz), http.py (safe fetcher)
+├── common/              normalize.py (slug, url, Turkish folding, title key), clock.py (today in tz),
+│                        http.py (safe fetcher), fields.py (shared field types), models.py (PATCH base),
+│                        pagination.py, sql.py (insert/update/page helpers), errors.py
 ├── events/              models.py, repository.py, service.py (state machine), router.py
-├── sources/             models, repository, router
-├── review/              signals.py (deterministic checks), router.py
+├── sources/             models, repository, router (sources + event sources)
+├── review/              models.py, signals.py (deterministic checks), router.py
 ├── community/           models, repository, router (read + status update)
-├── publishing/          hashing.py (publishable projection + sha256), models.py
-│   └── telegram/        client.py (httpx2), router.py (V1: /telegram/check)
-├── llm/                 provider.py (Protocol), ollama.py, router.py (V1: /llm/check)
-└── web/                 revalidate.py (POST to public site)
+├── publishing/          hashing.py (publishable projection + sha256)
+├── telegram/            client.py (httpx2), check.py, formatting.py, router.py (V1: /telegram/check)   [M6]
+├── llm/                 provider.py (Protocol), ollama.py, untrusted.py, router.py (V1: /llm/check)   [M6]
+├── overview/            router.py (counters + heartbeats)
+├── system/              router.py (/system/db)
+└── web/                 revalidate.py (POST to public site, best effort)
 ```
+
+### Safe fetcher (`common/http.py`)
+
+Implements CRAWLING_RESEARCH §5 for every hop: http/https only, ports 80/443, no credentials in URLs; DNS resolved by the API and the request refused if **any** address is not globally routable (private, loopback, link-local/metadata, ULA, CGNAT, multicast, deprecated site-local, and IPv6 forms that embed an IPv4 address: IPv4-mapped, -compatible and -translated are blocked, NAT64 `64:ff9b::/96` is judged by its embedded IPv4 address); the connection is pinned to the checked address (original host in `Host` and TLS SNI, so no second lookup can be rebound); environment proxies ignored; manual redirects (max 5, re-checked); 10 s timeouts; when a body is read, a 5 MB streamed cap and an HTML/JSON/XML/image content-type allow-list. Known gaps: no timeout on the OS DNS lookup and no overall wall-clock limit across hops.
+
+### Review signals (`review/signals.py`)
+
+Each signal is `{key, status: pass|warn|fail|info, detail, blocks_approval}`; no scores. Official URL reachable = headers-only GET through the safe fetcher, final 2xx/3xx (an invalid/non-public URL fails and blocks approval, and is never fetched). The endpoint finishes its database reads and returns the pooled connection before the fetch. Dates coherent = `start ≤ end` and `deadline ≤ end_date` (or `≤ start_date` when there is no end date). Possible duplicate = same `official_url_normalized`, or same `fold_title(title)` + same start date.
 
 Modules added later: `discovery/`, `crawling/`, `extraction/`, `verification/`, `deduplication/`, `runs/`. These are folders, not services.
 
@@ -95,7 +134,17 @@ Modules added later: `discovery/`, `crawling/`, `extraction/`, `verification/`, 
 
 Editing a published event keeps it published, triggers revalidation, and marks "changed since published" for Telegram (V1.1).
 
-### Env (`services/api/.env`, gitignored)
+As built (M3):
+- Invalid transition (wrong source status) → 409 `cannot <action> an event in status <status>`. A failing guard → 409 `cannot <action>: <problems>`.
+- "Required fields" = `title`, `summary`, `official_url`, `start_date`, `format`. Approve **and publish** check required fields + dates coherent + official URL valid (http/https, port 80/443, public fully qualified host; static, no network).
+- `reject` needs `reason` (422 otherwise). Any given `reason` is appended to `internal_notes` as `[<UTC time>] <action>: <reason>`.
+- `publish` sets `published_at = now()`; `archive` sets `archived_at`; `reopen` clears `archived_at` but keeps the old `published_at` (a later `publish` overwrites it).
+- `POST /events` retries a lost slug race (a concurrent create took the chosen slug between the check and the insert) with the next free slug, up to 3 attempts in savepoints; after that it returns the usual 409.
+- Revalidation (tags `events`, `event:<slug>`) runs whenever the event enters or leaves `published` (publish, unpublish, archive from published) and on edits of a published event. It is best effort: failures are logged (status code or exception class only) and never fail the request; it is disabled when `WEB_BASE_URL` or `WEB_REVALIDATE_SECRET` is unset.
+
+### Env (`services/api/.env`, gitignored; names in `services/api/.env.example`)
+
+`DATABASE_URL` and `ADMIN_API_TOKEN` (≥ 32 chars) are required; empty values count as unset; unknown keys are ignored (the file is shared with the M6 modules). Tests never read `.env`: they use `TEST_DATABASE_URL` or the local default and refuse non-local hosts.
 
 ```text
 DATABASE_URL=postgresql://admin_backend:...@<pooler-host>:5432/postgres?sslmode=require
@@ -103,7 +152,7 @@ ADMIN_API_TOKEN=...
 WEB_BASE_URL=https://<public-site>
 WEB_REVALIDATE_SECRET=...
 OLLAMA_BASE_URL=http://127.0.0.1:11434
-OLLAMA_MODEL=qwen3.5:4b          # placeholder until benchmark
+OLLAMA_MODEL=qwen3.5:0.8b        # default; placeholder until the V1.2 benchmark
 TELEGRAM_BOT_TOKEN=              # optional in V1
 TELEGRAM_CHANNEL_ID=             # optional in V1
 ```
@@ -126,6 +175,13 @@ Migrations create the role as `NOLOGIN`, with RLS policies granting it full acce
 | `pnpm db:legacy-seed` | Regenerate `supabase/seed_legacy_events.sql` from `events.json` (deterministic) |
 
 Stop the stack when you are not developing (`pnpm db:stop`). Its ports listen on all interfaces (SECURITY S8).
+
+### Known limitations (V1, deferred)
+
+- The safe fetcher connects only to the first resolved address (all addresses are checked, but there is no fallback to the next one when the first is unreachable).
+- The 5 MB body cap is counted per decoded chunk, so one highly compressed chunk can decode to more than the cap before the check runs. `read_body=True` is unused in V1 (the review check reads headers only).
+- FastAPI validates request bodies before the auth dependency runs: an unauthenticated malformed POST gets 422 (field errors, no data), and an unknown path gets 404, instead of 401.
+- The app's INFO logs (e.g. "web revalidation enabled") are not shown under uvicorn's default logging configuration; warnings and errors are.
 
 ## 3. Local development
 
