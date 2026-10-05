@@ -198,3 +198,49 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - Verify that the session pooler accepts `admin_backend.<project-ref>`.
 
 **S8 decision (owner, 2026-09-28):** accepted risk; no Docker/firewall change. Stop the local stack when not developing.
+
+### M3 API core + M6 integrations (2026-10-05): done locally
+
+**Built by three subagents in parallel worktrees, integrated and verified by the orchestrator.**
+- **M3:**
+  - Settings with pydantic-settings; psycopg pool (`admin_backend`); bearer token on every route except `/health`; `TrustedHostMiddleware`; consistent error mapping.
+  - Events CRUD with the state machine and guards; slug generation with a race-safe retry; normalized URLs.
+  - Sources and event sources; deterministic review signals with an SSRF-guarded fetcher (`httpx2`). The DB connection is released before the fetch.
+  - Community and team applications; overview counts and heartbeats; `/system/db`.
+  - Explicit OpenAPI operation ids; `/openapi.json` requires the token.
+- **M6:**
+  - `LLMProvider` + `OllamaProvider` (JSON-schema output, one repair retry, health states, localhost only) and the untrusted-content envelope.
+  - Telegram client and check: the token never appears in errors or logs; post + edit required, delete optional, excess rights warned.
+  - Model `qwen3.5:0.8b` pulled for the smoke test.
+- **Wiring:**
+  - clients created once and closed with an `ExitStack`;
+  - misconfigured Telegram/Ollama settings do not stop the API (they surface in the checks);
+  - `/llm/check` and `/telegram/check` sit behind the token.
+- **D-20 pass 2:** `httpx2` supports timeouts, manual redirects, streaming with a size cap, `MockTransport`, and SNI with IP pinning. It is now a runtime dependency.
+
+**Checks (re-run by the orchestrator):**
+- `ruff check`, `ruff format --check`, `mypy` strict (76 files): pass.
+- `pytest -W error`: 484 passed, 1 skipped (opt-in Ollama smoke test, which passed when run).
+- Live HTTP on a separate port: auth, host check, `/overview`, `/system/db`, `/llm/check` with real Ollama, `/telegram/check` not configured.
+- No test rows left in the DB.
+
+**Review 1 (functional, orchestrator):** Telegram rights decision (least privilege); wiring tests added.
+
+**Review 2 (independent subagent):**
+- No critical or high findings.
+- Fixed, 1 medium + 9 low:
+  - startup resilience for bad integration config;
+  - DB connection held during the review fetch;
+  - slug race;
+  - IPv6 embedded-IPv4 SSRF ranges;
+  - least-privilege docs and excess-rights warning;
+  - placeholder token rejected;
+  - ValidationError handler that never logs personal data;
+  - `trust_env=False`;
+  - robust shutdown;
+  - docs.
+- Deferred, listed in LOCAL_ADMIN "Known limitations":
+  - multi-address connect attempts;
+  - per-chunk decompression cap (unused in V1);
+  - 422 before auth on malformed unauthenticated bodies;
+  - app INFO logging config.
