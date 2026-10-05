@@ -30,16 +30,29 @@ def slugify(text: str, max_length: int = SLUG_MAX_LENGTH) -> str:
     return slug[:max_length].strip("-") or "event"
 
 
+def fold_title(text: str) -> str:
+    """Title comparison key: Turkish-folded words separated by single spaces."""
+    return " ".join(re.findall(r"[a-z0-9]+", fold_turkish(text)))
+
+
+_DEFAULT_PORTS = {"http": 80, "https": 443}
+
+
 def normalize_url(url: str) -> str:
     """Comparable form of a URL: host without www, path without trailing slash,
-    tracking parameters removed, remaining query sorted. Scheme and fragment dropped."""
+    tracking parameters removed, remaining query sorted. Scheme and fragment dropped;
+    the port is kept only when it is not the scheme's default."""
     parts = urlsplit(url.strip())
     host = (parts.hostname or "").lower()
     if host.startswith("www."):
         host = host[4:]
-    if parts.port and parts.port not in (80, 443):
+    if ":" in host:  # IPv6 literal: keep the brackets so a port stays unambiguous
+        host = f"[{host}]"
+    if parts.port and parts.port != _DEFAULT_PORTS.get(parts.scheme.lower()):
         host = f"{host}:{parts.port}"
     path = re.sub(r"/{2,}", "/", parts.path).rstrip("/")
+    # Percent-escapes are case-insensitive (RFC 3986 §6.2.2.1): %2f == %2F.
+    path = re.sub(r"%[0-9a-fA-F]{2}", lambda match: match.group(0).upper(), path)
     query = sorted(
         (key, value)
         for key, value in parse_qsl(parts.query, keep_blank_values=True)

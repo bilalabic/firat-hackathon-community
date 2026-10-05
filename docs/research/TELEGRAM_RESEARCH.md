@@ -46,3 +46,12 @@ Source: official Bot API docs `https://core.telegram.org/bots/api` (current: **B
 5. Run the admin **Settings → Test Telegram** check (M6). It calls `getMe`, `getChat` and `getChatMember` and reports missing rights.
 
 A private test channel with the same bot is recommended for V1.1 development, so tests never post to the real audience.
+
+## 5. Check implementation facts (M6, re-checked 2026-09-28 against Bot API 10.3)
+
+- Every response has a Boolean `ok`. On failure it has `description` and an Integer `error_code`, "but its contents are subject to change in the future", plus optional `parameters` (`ResponseParameters`: `retry_after`, `migrate_to_chat_id`). The docs do **not** list the error codes per method.
+- `getChat` returns `ChatFullInfo` (`id`, `type` = private/group/supergroup/channel, optional `title`, `username`). `getChatMember` "is only guaranteed to work for other users if the bot is an administrator"; the check queries the bot itself.
+- `ChatMember` is a union of 6 types discriminated by `status`: `creator`, `administrator`, `member`, `restricted`, `left`, `kicked`. In `ChatMemberAdministrator`, `can_delete_messages` is always present; `can_post_messages` and `can_edit_messages` are optional and "for channels only".
+- HTML style: `<`, `>`, `&` must be escaped; the only named entities supported are `&lt;`, `&gt;`, `&amp;`, `&quot;` (so `&quot;` is valid inside `href`).
+- The check's error mapping (`fhc_api/telegram/check.py`) uses the codes Telegram returns in practice, which the docs do not guarantee: `getMe` 401/404 → invalid token; 400 "chat not found" → chat not found; 403 (bot not a member / kicked) and `getChatMember` 400 "user not found" → bot not admin; anything else → `error`. **Verify against a real bot and channel** once they exist.
+- httpx2 logs every request URL (which contains the token) on the `httpx2` logger at INFO. `TelegramClient` installs a filter that redacts `/bot<token>` there.
