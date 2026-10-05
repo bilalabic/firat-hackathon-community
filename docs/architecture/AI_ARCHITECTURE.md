@@ -77,3 +77,12 @@ Architecture rules (enforced in code, not just in the prompt):
 - `GET /llm/check`: lists installed models (`/api/tags`) and runs one `generate_structured` call on a fixed 3-field schema, then reports latency.
 - Settings page button "Test Ollama".
 - Test: a unit test with a mocked HTTP transport for success, invalid JSON → one retry → error, and a timeout.
+
+Implementation notes (M6, 2026-09-28):
+
+- The V1 methods are **synchronous** (`httpx2.Client`); FastAPI runs the sync endpoint in its thread pool. The interface shape is otherwise as in §2. Switch to `async` if concurrent LLM calls are ever needed.
+- `OllamaProvider(base_url, model, timeout_s, client=None, *, allow_remote=False)` refuses non-loopback hosts unless `allow_remote=True`, and uses `trust_env=False` so no environment proxy is used.
+- Error mapping: connection refused → `not_running`; timeout → `LLMTimeoutError` (`health()` reports `not_running`); `/api/chat` HTTP 404 (`{"error":"model '…' not found"}`, verified on Ollama 0.34.2) → `LLMModelMissingError`; a model name without a tag matches `:latest`.
+- The repair re-ask contains the model's own previous output (truncated) and the validation locations/messages with `include_input=False`, so no input values are echoed.
+- `llm/untrusted.py` implements §4 rules 1–2: `wrap_untrusted()` (128-bit boundary; strips the boundary and every `<<<`/`>>>` run from the content) and `build_system_prompt()`.
+- Smoke test (opt-in, `FHC_OLLAMA_SMOKE_MODEL=qwen3.5:0.8b`): the 3-field check was schema-valid on the first attempt; about 48 s on the first call (cold model load), 0.4–0.6 s warm, on the RTX 5070 laptop. The timeout setting must allow for the cold load.

@@ -1,6 +1,6 @@
 import pytest
 
-from fhc_api.common.normalize import fold_turkish, normalize_url, slugify
+from fhc_api.common.normalize import fold_title, fold_turkish, normalize_url, slugify
 
 
 @pytest.mark.parametrize(
@@ -54,3 +54,33 @@ def test_normalize_url(url: str, expected: str) -> None:
 
 def test_normalize_url_keeps_path_case() -> None:
     assert normalize_url("https://example.com/Event") == "example.com/Event"
+
+
+@pytest.mark.parametrize(
+    ("url", "expected"),
+    [
+        # Default ports depend on the scheme.
+        ("http://example.com:80/a", "example.com/a"),
+        ("http://example.com:443/a", "example.com:443/a"),
+        ("https://example.com:80/a", "example.com:80/a"),
+        # IPv6 literals keep their brackets, so the port stays unambiguous.
+        ("http://[2001:DB8::1]:8080/a", "[2001:db8::1]:8080/a"),
+        ("https://[2001:db8::1]/", "[2001:db8::1]"),
+        # Percent-escapes compare case-insensitively.
+        ("https://example.com/a%2fb%c3%a7", "example.com/a%2Fb%C3%A7"),
+    ],
+)
+def test_normalize_url_edge_cases(url: str, expected: str) -> None:
+    assert normalize_url(url) == expected
+
+
+@pytest.mark.parametrize(
+    ("title", "expected"),
+    [
+        ("  Fırat   HACKATHON 2026! ", "firat hackathon 2026"),
+        ("Fırat-Hackathon: 2026", "firat hackathon 2026"),
+        ("İSTANBUL Şehir", "istanbul sehir"),
+    ],
+)
+def test_fold_title(title: str, expected: str) -> None:
+    assert fold_title(title) == expected
