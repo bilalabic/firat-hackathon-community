@@ -1,0 +1,38 @@
+name: Supabase keep-alive
+
+# Secondary keep-alive (D-19). The primary is the Vercel Cron in apps/web/vercel.json.
+# Scheduled 12 h after the Vercel cron so the two never fail for the same reason.
+on:
+  schedule:
+    - cron: "0 15 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: keep-alive
+  cancel-in-progress: false
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Call api.keep_alive
+        env:
+          SUPABASE_URL: ${{ secrets.SUPABASE_URL }}
+          SUPABASE_PUBLISHABLE_KEY: ${{ secrets.SUPABASE_PUBLISHABLE_KEY }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SUPABASE_URL}" ] || [ -z "${SUPABASE_PUBLISHABLE_KEY}" ]; then
+            echo "::warning::SUPABASE_URL or SUPABASE_PUBLISHABLE_KEY is not set; skipping."
+            exit 0
+          fi
+          curl --fail-with-body --silent --show-error --max-time 30 \
+            --request POST "${SUPABASE_URL}/rest/v1/rpc/keep_alive" \
+            --header "apikey: ${SUPABASE_PUBLISHABLE_KEY}" \
+            --header "Content-Profile: api" \
+            --header "Content-Type: application/json" \
+            --data '{"source":"github_actions"}'
+          echo

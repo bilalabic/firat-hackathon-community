@@ -1,93 +1,79 @@
 # Fırat Hackathon Community
 
-> **Migration in progress.** The project is being rebuilt as a shared database, a local admin and a
-> new public website. The static site below keeps working until the cutover. See
-> [MASTER_PLAN.md](MASTER_PLAN.md) and [docs/](docs/).
+A hackathon directory and community platform: discover, verify, structure, review and publish
+hackathons, and let students join the community.
 
-## Development (new stack)
+> **Status:** V1 is being finished. The legacy static site is still live at
+> https://bilalabic.github.io/firat-hackathon-community/ until the cutover (M7). See
+> [MASTER_PLAN.md](MASTER_PLAN.md) for progress and [docs/](docs/) for architecture and decisions.
 
-Requirements (Windows): Node.js ≥ 22, pnpm 12, and [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`).
+## How it fits together
+
+| Part | Where | Runs on |
+|---|---|---|
+| Public website (Turkish UI) | `apps/web` (Next.js 16) | Vercel |
+| Local admin UI | `apps/admin` (Next.js 16, shadcn dashboard-01) | Developer laptop, `127.0.0.1:3001` |
+| Local admin API | `services/api` (FastAPI, Python 3.12) | Developer laptop, `127.0.0.1:8000` |
+| Database | `supabase/` (Postgres migrations, pgTAP tests) | Supabase (cloud) / Docker (local) |
+| Local LLM (optional) | Ollama | Developer laptop, `127.0.0.1:11434` |
+
+The public site reads published events and submits forms through a narrow `api` schema with the
+publishable key. Only the local API writes canonical data. Details:
+[SYSTEM_ARCHITECTURE](docs/architecture/SYSTEM_ARCHITECTURE.md).
+
+## Requirements (Windows)
+
+- Node.js ≥ 22 and pnpm 12
+- [uv](https://docs.astral.sh/uv/) (`winget install astral-sh.uv`); uv installs Python 3.12
+- Docker Desktop (for the local Supabase stack)
+- Optional: Ollama (`winget install Ollama.Ollama`) for the LLM check
+
+## Local development
 
 ```bash
-pnpm install                     # web + admin
-cd services/api && uv sync && cd ../..   # API (uv installs Python 3.12)
-pnpm dev                         # web :3000, admin 127.0.0.1:3001, api 127.0.0.1:8000
-pnpm lint && pnpm typecheck && pnpm test && pnpm build
+pnpm install
+cd services/api && uv sync && cd ../..
+
+pnpm db:start            # local Supabase (Docker) + backend role login
+pnpm db:reset            # recreate the DB: migrations + legacy seed
+
+# env files (gitignored), see each .env.example:
+#   services/api/.env      DATABASE_URL, ADMIN_API_TOKEN, ...
+#   apps/admin/.env.local  ADMIN_API_URL, ADMIN_API_TOKEN (same token)
+#   apps/web/.env.local    SUPABASE_URL, SUPABASE_PUBLISHABLE_KEY (pnpm exec supabase status)
+
+pnpm dev                 # web :3000, admin 127.0.0.1:3001, api 127.0.0.1:8000
+pnpm db:stop             # stop the local stack when you are done
 ```
 
-| Path | What |
+The local Supabase ports listen on all interfaces (accepted risk, SECURITY S8): stop the stack when
+you are not developing.
+
+## Checks
+
+```bash
+pnpm lint && pnpm typecheck && pnpm test && pnpm build   # all apps + API
+pnpm test:db                                             # pgTAP (needs the local stack)
+```
+
+`pnpm build` prerenders the public site from the database, so `apps/web/.env.local` must point at a
+running Supabase.
+
+## Useful scripts
+
+| Script | Does |
 |---|---|
-| `apps/web` | Public website (Next.js, Vercel) |
-| `apps/admin` | Local admin (Next.js + shadcn dashboard) |
-| `services/api` | Local admin API (FastAPI) |
+| `pnpm db:types` | Regenerate the web app's types from the `api` schema |
+| `pnpm db:legacy-seed` | Regenerate `supabase/seed_legacy_events.sql` from the legacy `events.json` |
+| `pnpm --filter admin run api:types` | Regenerate the admin's API types (API running, token required) |
 
-Fırat Hackathon Community tarafından takip edilen hackathon ve teknoloji yarışmalarını tek sayfada
-listeleyen küçük, hızlı ve mobil öncelikli bir site.
+## Legacy site (until the cutover)
 
-**Canlı:** https://bilalabic.github.io/firat-hackathon-community/
+`index.html`, `style.css`, `script.js` and `events.json` at the repository root are the old static
+site, still deployed to GitHub Pages by `.github/workflows/deploy-pages.yml`. New events go through
+the admin. The Issue Form flow is retired at the cutover.
 
-Topluluğa katılmak veya etkinlik önermek için: **bilalabic78@gmail.com**
+## Contributing
 
-## Teknoloji
-
-HTML + CSS + vanilla JavaScript + JSON. Build sistemi, framework, backend ve veritabanı yok.
-Otomasyon GitHub Issue Forms + GitHub Actions, hosting GitHub Pages.
-
-## Repo yapısı
-
-```
-index.html                        tek sayfa
-style.css                         tasarım (açık tema + otomatik koyu tema)
-script.js                         yükleme, durum hesabı, sıralama, arama, filtre
-events.json                       tek veri kaynağı
-.github/ISSUE_TEMPLATE/event.yml  etkinlik ekleme formu
-.github/ISSUE_TEMPLATE/config.yml boş Issue kapalı + iletişim bağlantısı
-.github/scripts/add_event.py      form doğrulama + events.json güncelleme
-.github/workflows/add-event.yml   Issue → doğrula → commit → deploy → Issue'yu kapat
-.github/workflows/deploy-pages.yml GitHub Pages yayını
-```
-
-## Etkinlik ekleme
-
-Etkinlikler `events.json` elle düzenlenerek değil, **Issue Form** ile eklenir:
-
-1. GitHub (mobil de olur) → repo → **Issues** → **New issue** → **Etkinlik Ekle**
-2. Formu doldur → **Submit**
-3. Action formu doğrular, `events.json`'a ekler, commit'ler ve siteyi yeniden yayınlar, Issue'yu kapatır.
-
-Doğrulama hatası varsa commit atılmaz, Issue açık kalır ve hatalar yorum olarak yazılır.
-Yalnızca repo sahibinin açtığı `etkinlik` etiketli Issue'lar işlenir.
-
-### Veri biçimi
-
-```json
-{
-  "id": "ai-hackathon-2026",
-  "name": "AI Hackathon 2026",
-  "organizer": "ABC Teknoloji",
-  "deadline": "2026-08-25",
-  "eventDate": "2026-09-05",
-  "location": "İstanbul",
-  "format": "Yüz yüze",
-  "teamSize": "2-4 kişi",
-  "description": "Yapay zekâ odaklı hackathon.",
-  "url": "https://example.com"
-}
-```
-
-Durum (`Başvurular Açık` / `Yaklaşan` / `Sona Eren`) JSON'da tutulmaz; tarayıcıda tarihlerden
-hesaplanır.
-
-## Local test
-
-```bash
-python -m http.server 8000
-```
-
-Sonra `http://localhost:8000` adresini aç. (`fetch` kullanıldığı için dosyayı doğrudan `file://`
-ile açmak yerine bir sunucu üzerinden aç.)
-
-## GitHub Pages
-
-Yayın kaynağı: **Settings → Pages → Source: GitHub Actions**. `main`'e her push ve her başarılı
-etkinlik eklemesi siteyi otomatik olarak yeniden yayınlar; ayrıca manuel adım gerekmez.
+Open an issue or a pull request on GitHub. Code, docs, database names and the admin UI are in
+English; the public UI is in Turkish.
