@@ -20,6 +20,7 @@ from pydantic import BaseModel, Field
 
 from fhc_api.telegram.client import (
     TelegramAPIError,
+    TelegramChatMember,
     TelegramClient,
     TelegramError,
     TelegramUser,
@@ -36,9 +37,23 @@ TelegramCheckStatus = Literal[
 ]
 
 # Least privilege (SECURITY §6): posting and editing are required for V1.1 publishing.
-# Deleting is only a fallback correction path, so its absence is reported, not fatal.
+# Deleting is only a fallback correction path: its absence is information, not a problem.
 REQUIRED_CHANNEL_RIGHTS = ("can_post_messages", "can_edit_messages")
 OPTIONAL_CHANNEL_RIGHTS = ("can_delete_messages",)
+# ChatMemberAdministrator rights (Bot API 10.3) that V1 never uses; granting them only
+# widens what a leaked token can do. `can_manage_chat` is not listed: Telegram implies it
+# for every administrator.
+EXCESS_CHANNEL_RIGHTS = (
+    "can_change_info",
+    "can_invite_users",
+    "can_restrict_members",
+    "can_promote_members",
+    "can_manage_video_chats",
+    "can_post_stories",
+    "can_edit_stories",
+    "can_delete_stories",
+    "can_manage_direct_messages",
+)
 _ADMIN_STATUSES = frozenset({"creator", "administrator"})
 
 
@@ -50,6 +65,7 @@ class TelegramCheckResult(BaseModel):
     chat_type: str | None = None
     missing_rights: list[str] = Field(default_factory=list)
     missing_optional_rights: list[str] = Field(default_factory=list)
+    excess_rights: list[str] = Field(default_factory=list)
 
 
 def _error_result(
@@ -89,8 +105,18 @@ def _error_result(
 
 
 def run_telegram_check(
-    client: TelegramClient | None, channel_id: int | str | None
+    client: TelegramClient | None,
+    channel_id: int | str | None,
+    *,
+    invalid_token_format: bool = False,
 ) -> TelegramCheckResult:
+    """`invalid_token_format`: TELEGRAM_BOT_TOKEN is set but no client could be built."""
+    if invalid_token_format:
+        return TelegramCheckResult(
+            status="invalid_token",
+            message="TELEGRAM_BOT_TOKEN has an invalid format (expected <id>:<secret>). "
+            "Fix it in services/api/.env.",
+        )
     if client is None or channel_id is None or str(channel_id).strip() == "":
         return TelegramCheckResult(
             status="not_configured",
@@ -112,6 +138,7 @@ def run_telegram_check(
         message: str,
         missing: list[str] | None = None,
         missing_optional: list[str] | None = None,
+        excess: list[str] | None = None,
     ) -> TelegramCheckResult:
         return TelegramCheckResult(
             status=status,
@@ -121,6 +148,7 @@ def run_telegram_check(
             chat_type=chat.type,
             missing_rights=missing or [],
             missing_optional_rights=missing_optional or [],
+            excess_rights=excess or [],
         )
 
     if chat.type != "channel":
@@ -139,26 +167,37 @@ def run_telegram_check(
             f"The bot is {member.status!r} in the channel, not an administrator.",
         )
 
-    def lacking(rights: tuple[str, ...]) -> list[str]:
-        if member.status == "creator":
-            return []
-        return [right for right in rights if getattr(member, right) is not True]
+    # A creator holds every right implicitly; Telegram does not list them.
+    is_creator = member.status == "creator"
+    missing = [] if is_creator else _rights(member, REQUIRED_CHANNEL_RIGHTS, granted=False)
+    optional = [] if is_creator else _rights(member, OPTIONAL_CHANNEL_RIGHTS, granted=False)
+    excess = [] if is_creator else _rights(member, EXCESS_CHANNEL_RIGHTS, granted=True)
 
-    missing = lacking(REQUIRED_CHANNEL_RIGHTS)
-    optional = lacking(OPTIONAL_CHANNEL_RIGHTS)
+    notes = []
+    if optional:
+        notes.append("Not granted (optional, only needed to delete posts): " + ", ".join(optional))
+    if excess:
+        notes.append(
+            "Warning: the bot has rights V1 does not need: "
+            + ", ".join(excess)
+            + "; remove them (least privilege)"
+        )
+    suffix = "".join(f" {note}." for note in notes)
     if missing:
         return result(
             "missing_rights",
-            "The bot is an administrator but lacks: " + ", ".join(missing) + ".",
+            "The bot is an administrator but lacks: " + ", ".join(missing) + "." + suffix,
             missing,
             optional,
+            excess,
         )
-    if optional:
-        return result(
-            "ok",
-            "Bot token and required channel rights are OK. Optional right missing: "
-            + ", ".join(optional)
-            + ".",
-            missing_optional=optional,
-        )
-    return result("ok", "Bot token and channel rights are OK.")
+    return result(
+        "ok",
+        "Bot token and required channel rights are OK." + suffix,
+        missing_optional=optional,
+        excess=excess,
+    )
+
+
+def _rights(member: TelegramChatMember, rights: tuple[str, ...], *, granted: bool) -> list[str]:
+    return [right for right in rights if (getattr(member, right) is True) is granted]

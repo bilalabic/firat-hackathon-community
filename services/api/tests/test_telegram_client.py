@@ -8,6 +8,7 @@ import pytest
 from fhc_api.telegram.client import (
     TelegramAPIError,
     TelegramClient,
+    TelegramConfigError,
     TelegramError,
     TelegramNetworkError,
     TelegramResponseError,
@@ -161,7 +162,7 @@ def test_repr_does_not_contain_token() -> None:
     "token", ["", "abc", "123:short", f"{TOKEN}/../x", f"{TOKEN}?a=1", f" {TOKEN} x"]
 )
 def test_invalid_token_format_rejected_without_echo(token: str) -> None:
-    with pytest.raises(ValueError) as info:
+    with pytest.raises(TelegramConfigError) as info:
         TelegramClient(token)
     assert token.strip() == "" or token not in str(info.value)
 
@@ -182,3 +183,14 @@ def test_errors_share_base_class() -> None:
     assert issubclass(TelegramAPIError, TelegramError)
     assert issubclass(TelegramNetworkError, TelegramError)
     assert issubclass(TelegramResponseError, TelegramError)
+    assert issubclass(TelegramConfigError, TelegramError)
+    assert issubclass(TelegramConfigError, ValueError)
+
+
+def test_own_http_client_ignores_environment_proxies() -> None:
+    # The request URL carries the token; it must never be sent through a proxy.
+    client = TelegramClient(TOKEN)
+    try:
+        assert client._client.trust_env is False
+    finally:
+        client.close()

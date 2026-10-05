@@ -57,10 +57,24 @@ class TelegramChatMember(_TelegramModel):
     can_post_messages: bool | None = None
     can_edit_messages: bool | None = None
     can_delete_messages: bool | None = None
+    # Rights V1 does not need; the check reports them as excess (least privilege).
+    can_change_info: bool | None = None
+    can_invite_users: bool | None = None
+    can_restrict_members: bool | None = None
+    can_promote_members: bool | None = None
+    can_manage_video_chats: bool | None = None
+    can_post_stories: bool | None = None
+    can_edit_stories: bool | None = None
+    can_delete_stories: bool | None = None
+    can_manage_direct_messages: bool | None = None
 
 
 class TelegramError(Exception):
     """Base class. Messages never contain the bot token."""
+
+
+class TelegramConfigError(TelegramError, ValueError):
+    """The client was constructed with an invalid token or base URL."""
 
 
 class TelegramNetworkError(TelegramError):
@@ -119,14 +133,17 @@ class TelegramClient:
         token = token.strip()
         if not _TOKEN_RE.fullmatch(token):
             # Do not echo the value.
-            raise ValueError("Telegram bot token has an invalid format (expected <id>:<secret>).")
+            raise TelegramConfigError(
+                "Telegram bot token has an invalid format (expected <id>:<secret>)."
+            )
         if not base_url.startswith(("https://", "http://")):
-            raise ValueError("Telegram base URL must be http(s).")
+            raise TelegramConfigError("Telegram base URL must be http(s).")
         self._token = token
         self._base_url = base_url.rstrip("/")
         self._timeout_s = timeout_s
         self._owns_client = client is None
-        self._client = client or httpx2.Client(follow_redirects=False)
+        # trust_env=False: the request URL carries the token; never send it via a proxy.
+        self._client = client or httpx2.Client(trust_env=False, follow_redirects=False)
         install_log_redaction()
 
     def __repr__(self) -> str:

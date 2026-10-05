@@ -42,8 +42,8 @@ Source: official Bot API docs `https://core.telegram.org/bots/api` (current: **B
 1. Create a **channel** (announcements). A discussion group is optional and can be linked to the channel later.
 2. Choose public (`@username`) or private. A public username makes the ID simple (`@name`). A private channel uses the numeric `-100…` id, which `getChat` / the first update reveals.
 3. Create the bot with **@BotFather** (`/newbot`). Store the token only in `services/api/.env`.
-4. Add the bot to the channel as **administrator** with only *Post messages*, *Edit messages of others* and *Delete messages of others*.
-5. Run the admin **Settings → Test Telegram** check (M6). It calls `getMe`, `getChat` and `getChatMember` and reports missing rights.
+4. Add the bot to the channel as **administrator** with only *Post messages* and *Edit messages of others*. *Delete messages of others* is optional (a correction fallback). Turn every other right off (change channel info, invite users, add admins, manage stories, video chats, direct messages).
+5. Run the admin **Settings → Test Telegram** check (M6). It calls `getMe`, `getChat` and `getChatMember`, reports missing required rights, notes a missing delete right as information, and warns about granted rights V1 does not need (`excess_rights`; the status stays `ok`).
 
 A private test channel with the same bot is recommended for V1.1 development, so tests never post to the real audience.
 

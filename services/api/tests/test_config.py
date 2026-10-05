@@ -3,7 +3,7 @@ from pathlib import Path
 import pytest
 from pydantic import ValidationError
 
-from fhc_api.config import Settings
+from fhc_api.config import ADMIN_TOKEN_PLACEHOLDER, ENV_FILE, Settings
 from tests.conftest import make_settings
 
 
@@ -18,6 +18,14 @@ def test_defaults() -> None:
 def test_short_admin_token_is_rejected() -> None:
     with pytest.raises(ValidationError, match="ADMIN_API_TOKEN"):
         make_settings(ADMIN_API_TOKEN="x" * 31)
+
+
+def test_env_example_placeholder_token_is_rejected() -> None:
+    example = (ENV_FILE.parent / ".env.example").read_text(encoding="utf-8")
+    assert f"ADMIN_API_TOKEN={ADMIN_TOKEN_PLACEHOLDER}\n" in example
+
+    with pytest.raises(ValidationError, match=r"still the \.env\.example placeholder"):
+        make_settings(ADMIN_API_TOKEN=ADMIN_TOKEN_PLACEHOLDER)
 
 
 def test_web_base_url_must_be_http() -> None:

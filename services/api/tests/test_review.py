@@ -1,14 +1,18 @@
 """Review signals: pure rules (no database) and the endpoint (local database)."""
 
+from collections.abc import Iterator
+from contextlib import contextmanager
 from datetime import date
 from typing import Any
 from uuid import uuid4
 
 import httpx2
 import pytest
+from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from fhc_api.common.http import SafeFetcher
+from fhc_api.db import Conn, get_conn_factory
 from fhc_api.review.models import Signal
 from fhc_api.review.signals import (
     UrlCheck,
@@ -232,3 +236,43 @@ def test_review_endpoint_title_duplicate_and_skip_url_check(
 
 def test_review_unknown_event_is_404(client: TestClient) -> None:
     assert client.get("/events/00000000-0000-0000-0000-000000000000/review").status_code == 404
+
+
+def test_review_releases_the_connection_before_the_url_fetch(
+    app: FastAPI, client: TestClient, db: Conn
+) -> None:
+    subject = create_event(client)
+    steps: list[str] = []
+
+    @contextmanager
+    def tracked_conn() -> Iterator[Conn]:
+        steps.append("acquire")
+        with db.transaction():
+            yield db
+        steps.append("release")
+
+    def checker(url: str) -> UrlCheck:
+        steps.append("fetch")
+        return UrlCheck(reachable=True, detail="HTTP 200")
+
+    app.dependency_overrides[get_conn_factory] = lambda: tracked_conn
+    app.state.url_checker = checker
+
+    response = client.get(f"/events/{subject['id']}/review")
+
+    assert response.status_code == 200
+    assert steps == ["acquire", "release", "fetch"]
+
+
+def test_review_skips_the_fetch_for_a_statically_invalid_url(
+    client: TestClient, url_checker: FakeUrlChecker
+) -> None:
+    subject = create_event(client, official_url="http://127.0.0.1/internal")
+
+    review = client.get(f"/events/{subject['id']}/review").json()
+
+    assert url_checker.urls == []
+    signal = review["signals"][0]
+    assert signal["key"] == "official_url_reachable"
+    assert (signal["status"], signal["blocks_approval"]) == ("fail", True)
+    assert signal["detail"] == "official_url must point to a public host"

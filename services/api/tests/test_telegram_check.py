@@ -129,6 +129,48 @@ def test_missing_delete_right_is_reported_but_ok() -> None:
     assert result.missing_rights == []
     assert result.missing_optional_rights == ["can_delete_messages"]
     assert "can_delete_messages" in result.message
+    # Information, not something to fix.
+    assert "optional" in result.message
+    assert "lacks" not in result.message
+
+
+def test_excess_rights_are_reported_with_a_warning_but_ok() -> None:
+    rights = {
+        **ALL_RIGHTS,
+        "can_change_info": True,
+        "can_promote_members": True,
+        "can_invite_users": False,
+        "can_post_stories": True,
+    }
+    result = check(fake_telegram(get_chat_member=ok(admin(**rights))))
+    assert result.status == "ok"
+    assert result.excess_rights == ["can_change_info", "can_promote_members", "can_post_stories"]
+    assert "Warning" in result.message
+    assert "can_promote_members" in result.message
+    # Implied by every administrator right, so never reported.
+    assert "can_manage_chat" not in result.excess_rights
+
+
+def test_excess_rights_are_also_reported_when_required_rights_are_missing() -> None:
+    result = check(
+        fake_telegram(get_chat_member=ok(admin(can_post_messages=True, can_restrict_members=True)))
+    )
+    assert result.status == "missing_rights"
+    assert result.missing_rights == ["can_edit_messages"]
+    assert result.excess_rights == ["can_restrict_members"]
+
+
+def test_least_privilege_admin_has_no_excess_rights() -> None:
+    result = check(fake_telegram())
+    assert result.excess_rights == []
+    assert result.message == "Bot token and required channel rights are OK."
+
+
+@pytest.mark.parametrize("channel", ["@fhc", None])
+def test_invalid_token_format_is_reported_before_anything_else(channel: str | None) -> None:
+    result = run_telegram_check(None, channel, invalid_token_format=True)
+    assert result.status == "invalid_token"
+    assert "TELEGRAM_BOT_TOKEN has an invalid format" in result.message
 
 
 def test_non_channel_chat_is_error() -> None:

@@ -78,6 +78,13 @@ def never_called(request: httpx2.Request) -> httpx2.Response:
         "::ffff:169.254.169.254",
         "ff02::1",
         "2001:db8::1",  # documentation range
+        "64:ff9b::7f00:1",  # NAT64 -> 127.0.0.1
+        "64:ff9b::a9fe:a9fe",  # NAT64 -> 169.254.169.254
+        "64:ff9b::a00:1",  # NAT64 -> 10.0.0.1
+        "::7f00:1",  # IPv4-compatible 127.0.0.1
+        "::808:808",  # IPv4-compatible is deprecated: blocked even for a public IPv4
+        "::ffff:0:7f00:1",  # IPv4-translated 127.0.0.1
+        "fec0::1",  # site-local (deprecated)
         "not-an-ip",
         "",
     ],
@@ -86,7 +93,15 @@ def test_non_public_addresses_are_blocked(address: str) -> None:
     assert not is_public_address(address)
 
 
-@pytest.mark.parametrize("address", [PUBLIC_IP, "1.1.1.1", "2606:4700:4700::1111"])
+@pytest.mark.parametrize(
+    "address",
+    [
+        PUBLIC_IP,
+        "1.1.1.1",
+        "2606:4700:4700::1111",
+        "64:ff9b::808:808",  # NAT64 -> 8.8.8.8 (IPv6-only networks with DNS64)
+    ],
+)
 def test_public_addresses_are_allowed(address: str) -> None:
     assert is_public_address(address)
 

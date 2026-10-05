@@ -3,11 +3,14 @@
 from pathlib import Path
 from typing import Annotated
 
-from pydantic import AnyHttpUrl, Field, SecretStr, UrlConstraints
+from pydantic import AnyHttpUrl, Field, SecretStr, UrlConstraints, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 # src/fhc_api/config.py -> services/api/.env (independent of the working directory)
 ENV_FILE = Path(__file__).resolve().parents[2] / ".env"
+
+# The value shipped in `.env.example`; copying the file without editing it must fail.
+ADMIN_TOKEN_PLACEHOLDER = "replace-with-a-random-token-of-at-least-32-characters"  # noqa: S105
 
 WebUrl = Annotated[AnyHttpUrl, UrlConstraints(allowed_schemes=["http", "https"])]
 
@@ -38,3 +41,13 @@ class Settings(BaseSettings):
     # Telegram (D-12). The check reports `not_configured` while either is unset.
     TELEGRAM_BOT_TOKEN: SecretStr | None = None
     TELEGRAM_CHANNEL_ID: str | None = None
+
+    @field_validator("ADMIN_API_TOKEN")
+    @classmethod
+    def _not_the_placeholder(cls, value: SecretStr) -> SecretStr:
+        if value.get_secret_value().strip() == ADMIN_TOKEN_PLACEHOLDER:
+            raise ValueError(
+                "ADMIN_API_TOKEN is still the .env.example placeholder; "
+                "set a random token of at least 32 characters"
+            )
+        return value

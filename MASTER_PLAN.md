@@ -198,3 +198,76 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - Verify that the session pooler accepts `admin_backend.<project-ref>`.
 
 **S8 decision (owner, 2026-09-28):** accepted risk; no Docker/firewall change. Stop the local stack when not developing.
+
+### M3 API core + M6 integrations (2026-10-05): done locally
+
+**Built by three subagents in parallel worktrees, integrated and verified by the orchestrator.**
+- **M3:**
+  - Settings with pydantic-settings; psycopg pool (`admin_backend`); bearer token on every route except `/health`; `TrustedHostMiddleware`; consistent error mapping.
+  - Events CRUD with the state machine and guards; slug generation with a race-safe retry; normalized URLs.
+  - Sources and event sources; deterministic review signals with an SSRF-guarded fetcher (`httpx2`). The DB connection is released before the fetch.
+  - Community and team applications; overview counts and heartbeats; `/system/db`.
+  - Explicit OpenAPI operation ids; `/openapi.json` requires the token.
+- **M6:**
+  - `LLMProvider` + `OllamaProvider` (JSON-schema output, one repair retry, health states, localhost only) and the untrusted-content envelope.
+  - Telegram client and check: the token never appears in errors or logs; post + edit required, delete optional, excess rights warned.
+  - Model `qwen3.5:0.8b` pulled for the smoke test.
+- **Wiring:**
+  - clients created once and closed with an `ExitStack`;
+  - misconfigured Telegram/Ollama settings do not stop the API (they surface in the checks);
+  - `/llm/check` and `/telegram/check` sit behind the token.
+- **D-20 pass 2:** `httpx2` supports timeouts, manual redirects, streaming with a size cap, `MockTransport`, and SNI with IP pinning. It is now a runtime dependency.
+
+**Checks (re-run by the orchestrator):**
+- `ruff check`, `ruff format --check`, `mypy` strict (76 files): pass.
+- `pytest -W error`: 484 passed, 1 skipped (opt-in Ollama smoke test, which passed when run).
+- Live HTTP on a separate port: auth, host check, `/overview`, `/system/db`, `/llm/check` with real Ollama, `/telegram/check` not configured.
+- No test rows left in the DB.
+
+**Review 1 (functional, orchestrator):** Telegram rights decision (least privilege); wiring tests added.
+
+**Review 2 (independent subagent):**
+- No critical or high findings.
+- Fixed, 1 medium + 9 low:
+  - startup resilience for bad integration config;
+  - DB connection held during the review fetch;
+  - slug race;
+  - IPv6 embedded-IPv4 SSRF ranges;
+  - least-privilege docs and excess-rights warning;
+  - placeholder token rejected;
+  - ValidationError handler that never logs personal data;
+  - `trust_env=False`;
+  - robust shutdown;
+  - docs.
+- Deferred, listed in LOCAL_ADMIN "Known limitations":
+  - multi-address connect attempts;
+  - per-chunk decompression cap (unused in V1);
+  - 422 before auth on malformed unauthenticated bodies;
+  - app INFO logging config.
+
+### M5 Public web (2026-10-05): done locally
+
+**Built by a subagent, reviewed independently, fixes verified by the orchestrator.**
+- **Pages (Turkish-first):** `/`, `/hackathonlar` (Yaklaşan · Başvurular Açık · Son Günler · Geçmiş, Turkish-aware search, format/city filters, URL state, works without JS), `/hackathonlar/[slug]`, `/topluluk`, `/katki` (four intents), `/hakkinda`, 404 and error pages.
+- **Data access:** server-only Supabase client (schema `api`, publishable key, no `NEXT_PUBLIC_`).
+- **Caching:** Cache Components with a custom `events` cacheLife profile (revalidate 1 h, expire 2 h) and tags `events` and `event:<slug>`.
+- **Phase rules:** `lib/phase.ts`, with timezone and DST tests.
+- **Forms:** Server Actions → RPC, posted with POST (progressive enhancement); zod schemas mirror the DB rules. Bot filters: honeypot, client-measured elapsed time, consent versions. The KVKK notice is a marked TASLAK placeholder (Q9).
+- **SEO:** metadata, JSON-LD Event, sitemap, robots, and a deterministic OG card (vendored Geist TTF, OFL). Turkish glyphs verified. Unknown cards return 404 `no-store` with tags.
+- **Route handlers:** `/api/revalidate` (Bearer token, constant-time compare, tag schema) and `/api/cron/keep-alive` (`CRON_SECRET`, `no-store`); `vercel.json` sets a daily cron.
+- **Security headers:** `X-Frame-Options`, `frame-ancestors`, `nosniff`, `Referrer-Policy`; `X-Powered-By` off.
+- **Proxy:** malformed slugs get a real 404.
+
+**Checks (re-run by the orchestrator on the branch merged with main):**
+- lint, typecheck, build: pass. Tests: 75 passed.
+- Client bundle: 0 secret matches.
+- Live production server: security headers present; unknown OG card 404 `no-store`; malformed slug 404; form `method=POST`.
+
+**Review 2 (independent subagent):**
+- Fixed:
+  - 1 high: a cached 404 for the OG card survived revalidation;
+  - 1 medium: a no-JS submit leaked personal data into the GET query;
+  - 10 low: ISR cache growth from unknown slugs, duplicate noindex, phase staleness up to 1 day, `SITE_URL` fallback, security headers, honeypot autofill, input border contrast 1.59 → 3.21, consistent Turkish "sen" address, security unit tests, `@types/node` ^24.
+- Accepted: soft 404 (200 + noindex) for well-formed unknown slugs, plus a bounded 2 h shell cache entry (see PUBLIC_WEB).
+
+**Not done:** Lighthouse (MVP 17) is to be measured at M7 on Vercel. There is no dark mode.

@@ -5,7 +5,9 @@ from typing import Any, get_args
 import pytest
 from fastapi.testclient import TestClient
 
+from fhc_api.common.sql import insert_row
 from fhc_api.db import Conn
+from fhc_api.events import service
 from fhc_api.events.models import EventAction, EventStatus
 from fhc_api.events.service import TRANSITIONS
 from tests.conftest import MARK, RecordingRevalidator
@@ -47,6 +49,55 @@ def test_slug_collisions_get_numeric_suffixes(client: TestClient) -> None:
     slugs = [create_event(client, title=f"{MARK} Same Title")["slug"] for _ in range(3)]
 
     assert slugs == ["pytest-m3-same-title", "pytest-m3-same-title-2", "pytest-m3-same-title-3"]
+
+
+def racing_slug_check(monkeypatch: pytest.MonkeyPatch, db: Conn, races: int) -> list[str]:
+    """Make the first `races` slug choices lose a race: right after `_unique_slug` picks a
+    slug, a "concurrent" create inserts an event with that slug. Returns the stolen slugs."""
+    real_unique_slug = service._unique_slug
+    stolen: list[str] = []
+
+    def unique_slug_then_race(conn: Conn, title: str) -> str:
+        slug = real_unique_slug(conn, title)
+        if len(stolen) < races:
+            insert_row(
+                db,
+                "events",
+                {
+                    "slug": slug,
+                    "title": f"{MARK} Concurrent",
+                    "official_url": "https://pytest-m3.example.com/concurrent",
+                    "official_url_normalized": "pytest-m3.example.com/concurrent",
+                },
+            )
+            stolen.append(slug)
+        return slug
+
+    monkeypatch.setattr(service, "_unique_slug", unique_slug_then_race)
+    return stolen
+
+
+def test_slug_race_is_retried_with_the_next_slug(
+    client: TestClient, db: Conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stolen = racing_slug_check(monkeypatch, db, races=2)
+
+    event = create_event(client, title=f"{MARK} Race")
+
+    assert stolen == ["pytest-m3-race", "pytest-m3-race-2"]
+    assert event["slug"] == "pytest-m3-race-3"
+
+
+def test_slug_race_gives_up_after_three_attempts(
+    client: TestClient, db: Conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    stolen = racing_slug_check(monkeypatch, db, races=3)
+
+    response = client.post("/events", json=event_payload(title=f"{MARK} Race"))
+
+    assert len(stolen) == service.SLUG_ATTEMPTS == 3
+    assert response.status_code == 409
+    assert response.json() == {"detail": "conflicts with an existing row (events_slug_key)"}
 
 
 def test_slug_collides_with_seeded_legacy_event(client: TestClient) -> None:

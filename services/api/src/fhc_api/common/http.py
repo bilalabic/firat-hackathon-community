@@ -4,7 +4,8 @@ Rules, applied to the first URL and to every redirect hop:
 - only `http`/`https`, only ports 80 and 443, no credentials in the URL;
 - the host is resolved here, and the request is refused if ANY resolved address is
   private, loopback, link-local (cloud metadata), unique-local, multicast, reserved or
-  otherwise not globally routable;
+  otherwise not globally routable, including IPv6 forms that embed an IPv4 address
+  (IPv4-mapped, -compatible, -translated; NAT64 is checked by its embedded address);
 - the connection then goes to the checked address (pinned), with the original host in
   the `Host` header and as the TLS SNI/certificate name. A second DNS lookup by the
   HTTP stack, which a rebinding attacker could answer differently, never happens;
@@ -48,8 +49,10 @@ ALLOWED_CONTENT_TYPES = frozenset(
 )
 _REDIRECT_CODES = frozenset({301, 302, 303, 307, 308})
 
-# Explicit list from CRAWLING_RESEARCH §5. `is_global` below already excludes all of
-# these; the list documents intent and guards against stdlib classification changes.
+# Explicit list from CRAWLING_RESEARCH §5. `is_global` below already excludes the first
+# group; the list documents intent and guards against stdlib classification changes.
+# The second group is NOT excluded by `is_global` (Python 3.12): IPv6 forms that embed
+# an IPv4 address, and the deprecated site-local range.
 _BLOCKED_NETWORKS = tuple(
     ipaddress.ip_network(cidr)
     for cidr in (
@@ -64,8 +67,15 @@ _BLOCKED_NETWORKS = tuple(
         "::/128",
         "fc00::/7",
         "fe80::/10",
+        # --
+        "::/96",  # IPv4-compatible (deprecated): ::7f00:1 is 127.0.0.1
+        "::ffff:0:0:0/96",  # IPv4-translated (SIIT): ::ffff:0:7f00:1 is 127.0.0.1
+        "fec0::/10",  # site-local (deprecated)
     )
 )
+# NAT64 well-known prefix (RFC 6052): traffic reaches the embedded IPv4 address, which
+# must itself be public (64:ff9b::7f00:1 is 127.0.0.1 behind the NAT64 gateway).
+_NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 type Resolver = Callable[[str, int], Sequence[str]]
 
@@ -98,8 +108,11 @@ def is_public_address(address: str) -> bool:
         ip = ipaddress.ip_address(address)
     except ValueError:
         return False
-    if isinstance(ip, ipaddress.IPv6Address) and ip.ipv4_mapped is not None:
-        ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 is 127.0.0.1
+    if isinstance(ip, ipaddress.IPv6Address):
+        if ip.ipv4_mapped is not None:
+            ip = ip.ipv4_mapped  # ::ffff:127.0.0.1 is 127.0.0.1
+        elif ip in _NAT64:
+            ip = ipaddress.IPv4Address(int(ip) & 0xFFFF_FFFF)
     if any(ip in network for network in _BLOCKED_NETWORKS):
         return False
     return ip.is_global and not ip.is_multicast

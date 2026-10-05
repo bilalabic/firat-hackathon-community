@@ -9,6 +9,7 @@ from datetime import UTC, datetime
 from typing import Any
 from uuid import UUID
 
+from psycopg import errors as pg_errors
 from psycopg.rows import DictRow
 
 from fhc_api.common.errors import conflict, not_found, unprocessable
@@ -42,6 +43,9 @@ REQUIRED_FOR_REVIEW = ("title", "summary", "official_url", "start_date", "format
 # Statuses whose data must keep passing the approval checks when edited.
 GUARDED_STATUSES: frozenset[str] = frozenset({"approved", "published"})
 INTERNAL_NOTES_MAX = 5000
+# Unique constraint on app.events.slug, and how often a lost slug race is retried.
+SLUG_CONSTRAINT = "events_slug_key"
+SLUG_ATTEMPTS = 3
 
 
 def allowed_actions(status: str) -> list[EventAction]:
@@ -153,11 +157,25 @@ def create_event(conn: Conn, data: EventCreate) -> DictRow:
     values = data.model_dump()
     if problems := consistency_problems(values):
         raise unprocessable("; ".join(problems))
+    values["official_url_normalized"] = normalize_url(data.official_url)
+    values.update(_verified_at(values, {"verification_status": "unverified"}))
     with conn.transaction():
-        values["slug"] = _unique_slug(conn, data.title)
-        values["official_url_normalized"] = normalize_url(data.official_url)
-        values.update(_verified_at(values, {"verification_status": "unverified"}))
-        return repository.insert(conn, values)
+        return _insert_with_unique_slug(conn, values, data.title)
+
+
+def _insert_with_unique_slug(conn: Conn, values: dict[str, Any], title: str) -> DictRow:
+    """`_unique_slug` checks, then inserts: a concurrent create can take the slug in
+    between. Each attempt runs in a savepoint, so a lost race is retried with the next
+    free slug; after SLUG_ATTEMPTS the UniqueViolation surfaces as the usual 409."""
+    for attempt in range(1, SLUG_ATTEMPTS + 1):
+        values["slug"] = _unique_slug(conn, title)
+        try:
+            with conn.transaction():
+                return repository.insert(conn, values)
+        except pg_errors.UniqueViolation as exc:
+            if exc.diag.constraint_name != SLUG_CONSTRAINT or attempt == SLUG_ATTEMPTS:
+                raise
+    raise AssertionError("unreachable")  # pragma: no cover - the loop returns or raises
 
 
 @dataclass(frozen=True)

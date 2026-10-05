@@ -10,9 +10,13 @@ from fhc_api.telegram.client import TelegramClient
 
 
 def build_telegram_router(
-    get_client: Callable[[], TelegramClient | None], channel_id: int | str | None
+    get_client: Callable[[], TelegramClient | None],
+    channel_id: int | str | None,
+    *,
+    invalid_token_format: bool = False,
 ) -> APIRouter:
-    """`get_client` returns None when no bot token is configured."""
+    """`get_client` returns None when no bot token is configured, or when the configured
+    token could not be used (`invalid_token_format=True`; the check then reports it)."""
     router = APIRouter(tags=["telegram"])
 
     @router.get(
@@ -21,6 +25,6 @@ def build_telegram_router(
     def telegram_check(
         client: Annotated[TelegramClient | None, Depends(get_client)],
     ) -> TelegramCheckResult:
-        return run_telegram_check(client, channel_id)
+        return run_telegram_check(client, channel_id, invalid_token_format=invalid_token_format)
 
     return router
