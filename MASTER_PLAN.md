@@ -271,3 +271,41 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - Accepted: soft 404 (200 + noindex) for well-formed unknown slugs, plus a bounded 2 h shell cache entry (see PUBLIC_WEB).
 
 **Not done:** Lighthouse (MVP 17) is to be measured at M7 on Vercel. There is no dark mode.
+
+### M4 Local admin UI (2026-10-05): done locally
+
+**Built by a subagent, reviewed independently, fixes re-verified by the orchestrator.**
+- **dashboard-01 adapted, not redesigned.** Overview at `/` shows counters linked to filtered lists, keep-alive heartbeats that turn red after 48 h, and recent events. The chart and demo data are removed.
+- **Pages:**
+  - events list with filters and paging;
+  - event create/edit (sends only changed fields; CRLF-safe comparison);
+  - per-event Review page (event data | evidence: deterministic signals, duplicates, source tiers, event sources);
+  - review queue;
+  - community applications and contributions with status changes;
+  - sources;
+  - Settings (DB, Ollama with test output, Telegram including missing optional and excess rights, revalidation state).
+- **Transitions:** the UI offers only the actions the API allows for the current status. Publish, unpublish, archive, reject and request-changes ask for confirmation. A 409 re-renders the page with the current state.
+- **Security:**
+  - API client is server-only; the token never reaches the browser (grep: 0).
+  - Host allow-list proxy (`ADMIN_ALLOWED_HOSTS`, default `127.0.0.1,localhost`) on every route, including Server Actions. It checks Host, X-Forwarded-Host and Origin.
+  - Pages show an "API not reachable" state when the API is down.
+- Types are generated from the authenticated `/openapi.json` (`api:types`), with no `as unknown as` casts.
+- Dependencies: added `server-only`, `openapi-typescript`, `vitest` 5. Removed recharts and dnd-kit.
+
+**Checks (re-run by the orchestrator on the branch merged with main):**
+- lint, typecheck, build: pass.
+- Tests: admin 29, web 75, api 484 (+1 opt-in skipped); pgTAP 54.
+- Live: a foreign Host or X-Forwarded-Host gets 400 on pages and `/api/health`; the correct host gets 200.
+
+**Review 2 (independent subagent):** fixed 1 high, 1 medium and 9 low/nit.
+- High: DNS rebinding let a foreign site read application data and run Server Actions through the admin; reproduced live.
+- Medium: an untouched Save PATCHed multi-line fields (CRLF vs LF) and triggered revalidation.
+- Low/nit: focus after dialogs and 422, pager bounds, duplicate Ollama check, type casts, Publish confirmation, explicit time zone, a wrong comment, regenerated API types.
+
+**API gaps found (follow-ups, not blocking V1):**
+- no endpoint to read whether revalidation is configured;
+- no `GET /sources/{id}`;
+- no health-only Ollama check (the check always runs a test generation);
+- no delete for events or sources (test data had to be removed via SQL).
+
+**M7 note:** the web build prerenders from the database, so Vercel builds need `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` set and the DB reachable at build time.
