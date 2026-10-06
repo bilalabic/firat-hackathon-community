@@ -36,6 +36,11 @@ export function SiteFooter() {
             </Link>
           </li>
           <li>
+            <Link className="hover:text-foreground" href={routes.privacy}>
+              {footer.privacy}
+            </Link>
+          </li>
+          <li>
             <ExternalLink className="hover:text-foreground" href={externalLinks.github}>
               {footer.github}
             </ExternalLink>

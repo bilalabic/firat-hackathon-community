@@ -132,3 +132,18 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Revisit:** if approvals are routinely needed while the laptop is off. Then move the API to an always-on host rather than splitting logic into a webhook.
 - **Pass 1:** Bot API 10.3: `callback_data` 1–64 bytes, getUpdates long polling, 24 h retention, webhook `secret_token`; webhook and getUpdates are mutually exclusive; Mini App initData HMAC. **Pass 2:** B and C each widen the attack surface and duplicate or relocate business rules; A reuses M3/M6 code.
 - **Status:** Accepted (2026-10-06): option A; separate admin bot; no applicant details in Telegram. Plan: docs/planning/V1_1B_TELEGRAM_ADMIN.md
+
+### D-22 KVKK notice and cross-border transfer basis
+- **Options:**
+  - A. Legal advice + standard contract before the forms go live.
+  - B. Site live, forms closed until A is done.
+  - C. Minimise the form data.
+  - D. Keep everything live; explicit consent including a separate transfer-abroad statement.
+- **Chosen:** D, by the owner, 2026-10-06 ("sitenin hiçbir özelliğinden kısmayalım … sorumluluk bende").
+- **Notice:** `/aydinlatma-metni` (source `apps/web/src/lib/privacy.ts`). Controller Bilal Abiç, contact bilalabic78@gmail.com, retention 12 months, consent versions `2026-10-community-v2` / `2026-10-team-v2`.
+- **Risk:**
+  - Under KVKK m. 9 (in force since 2024-06-01), explicit consent covers occasional transfers. Storage with Supabase (Frankfurt) and processing through Vercel are regular transfers, so the basis may be insufficient.
+  - Accepted by the owner (R-20).
+  - The public notice is accurate about providers, locations and basis, and claims nothing more.
+- **Revisit:** after legal advice, if the community grows, or when the Authority issues guidance or an adequacy decision.
+- **Status:** Accepted (owner risk acceptance)

@@ -35,3 +35,15 @@ The primary source is the law text in the Resmî Gazete.
 
 12 months after the last action on an application, then delete or anonymise. **Not automated
 yet.** A scheduled deletion job is a follow-up item.
+
+## Owner decision (2026-10-06, D-22)
+
+The owner chose to keep **all** website features. The forms stay open, and explicit consent,
+including a separate statement on the transfer abroad, is the stated basis.
+
+The owner was informed that, since the 2024 amendment, explicit consent is intended for occasional
+transfers and may not be a sufficient basis for this regular transfer. The owner **accepted this
+risk and the responsibility** (RISKS R-20).
+
+Revisit with a lawyer, and move to a standard contract or another safeguard, if the community grows
+or the Authority issues guidance or an adequacy decision covering the providers.

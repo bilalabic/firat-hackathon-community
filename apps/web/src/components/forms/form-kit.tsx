@@ -1,6 +1,7 @@
 "use client";
 
 import { CheckCircle2 } from "lucide-react";
+import Link from "next/link";
 import {
   startTransition,
   useActionState,
@@ -12,9 +13,11 @@ import {
 } from "react";
 
 import { buttonVariants } from "@/components/ui/button";
-import { form } from "@/lib/copy";
+import { common, form } from "@/lib/copy";
 import { ELAPSED_FIELD, HONEYPOT_FIELD } from "@/lib/forms/guard";
 import { initialFormState, type FormState } from "@/lib/forms/state";
+import { privacyNotice } from "@/lib/privacy";
+import { routes } from "@/lib/routes";
 import { cn } from "@/lib/utils";
 
 type Action = (state: FormState, formData: FormData) => Promise<FormState>;
@@ -205,19 +208,20 @@ export function Honeypot() {
   );
 }
 
-/** Placeholder until the owner approves the KVKK notice (OPEN_QUESTIONS Q9). */
+/** Short KVKK summary next to the consent box; the full notice lives at /aydinlatma-metni. */
 export function PrivacyNotice() {
   return (
-    <section aria-labelledby="aydinlatma-metni" className="space-y-2 rounded-lg border border-dashed p-4 text-sm">
-      <div className="flex flex-wrap items-center gap-2">
-        <h3 id="aydinlatma-metni" className="font-medium">
-          {form.privacyTitle}
-        </h3>
-        <span className="rounded-full bg-soon-soft px-2 py-0.5 text-xs font-medium text-soon">
-          {form.privacyDraftBadge}
-        </span>
-      </div>
-      <p className="text-muted-foreground">{form.privacyDraft}</p>
+    <section aria-labelledby="aydinlatma-metni" className="space-y-2 rounded-lg border p-4 text-sm">
+      <h3 id="aydinlatma-metni" className="font-medium">
+        {form.privacyTitle}
+      </h3>
+      <p className="text-muted-foreground">{privacyNotice.formSummary}</p>
+      <p>
+        <Link href={routes.privacy} target="_blank" rel="noopener" className="font-medium text-brand underline underline-offset-4">
+          {privacyNotice.formLinkLabel}
+        </Link>
+        <span className="text-muted-foreground"> {common.opensInNewTab}</span>
+      </p>
     </section>
   );
 }

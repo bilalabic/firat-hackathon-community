@@ -8,6 +8,7 @@ export const routes = {
   community: "/topluluk",
   contribute: "/katki",
   about: "/hakkinda",
+  privacy: "/aydinlatma-metni",
 } as const;
 
 export const externalLinks = {
