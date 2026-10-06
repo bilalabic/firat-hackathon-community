@@ -1,7 +1,8 @@
 """Convert the legacy events.json into SQL for app.events + app.event_sources.
 
-Usage (from services/api):
-    uv run python -m fhc_api.legacy_import ../../events.json > ../../supabase/seed_legacy_events.sql
+The legacy data lives in supabase/legacy/events.json since the M7 cutover.
+
+Usage: `pnpm db:legacy-seed` from the repository root (writes supabase/seed_legacy_events.sql).
 
 Mapping: docs/architecture/DATA_MODEL.md §6. Output is idempotent (ON CONFLICT DO NOTHING).
 """

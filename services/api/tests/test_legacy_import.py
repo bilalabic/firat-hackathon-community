@@ -13,7 +13,7 @@ from fhc_api.legacy_import import (
     to_sql,
 )
 
-EVENTS_JSON = Path(__file__).resolve().parents[3] / "events.json"
+EVENTS_JSON = Path(__file__).resolve().parents[3] / "supabase" / "legacy" / "events.json"
 
 
 def load_legacy() -> list[dict[str, object]]:

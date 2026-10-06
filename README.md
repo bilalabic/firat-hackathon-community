@@ -3,8 +3,7 @@
 A hackathon directory and community platform: discover, verify, structure, review and publish
 hackathons, and let students join the community.
 
-> **Status:** V1 is being finished. The legacy static site is still live at
-> https://bilalabic.github.io/firat-hackathon-community/ until the cutover (M7). See
+> **Live:** https://firat-hackathon-community.vercel.app (the old GitHub Pages URL redirects there). See
 > [MASTER_PLAN.md](MASTER_PLAN.md) for progress and [docs/](docs/) for architecture and decisions.
 
 ## How it fits together
@@ -67,11 +66,13 @@ running Supabase.
 | `pnpm db:legacy-seed` | Regenerate `supabase/seed_legacy_events.sql` from the legacy `events.json` |
 | `pnpm --filter admin run api:types` | Regenerate the admin's API types (API running, token required) |
 
-## Legacy site (until the cutover)
+## Legacy site
 
-`index.html`, `style.css`, `script.js` and `events.json` at the repository root are the old static
-site, still deployed to GitHub Pages by `.github/workflows/deploy-pages.yml`. New events go through
-the admin. The Issue Form flow is retired at the cutover.
+The old static site was retired at the M7 cutover (2026-10-06). The old GitHub Pages URL now only
+redirects to the new site (`pages/`, `.github/workflows/deploy-pages.yml`) and keeps serving the
+frozen legacy `events.json` for any external consumer. The legacy data lives in
+`supabase/legacy/events.json` and generates `supabase/seed_legacy_events.sql`. The Issue Form flow is
+removed; events are added in the local admin.
 
 ## Contributing
 

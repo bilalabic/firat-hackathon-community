@@ -68,7 +68,7 @@ accounts or decisions. Nothing here may use `supabase db push --include-seed` ex
 - [ ] **#8:** the deployed client bundle contains no secrets.
 - [ ] **#21:** both heartbeats are recorded; an unauthorized cron call gets 401.
 
-## 7. Cutover
+## 7. Cutover (done 2026-10-06)
 
 1. Replace the legacy site on GitHub Pages with a small page: a meta refresh plus a link to the new
    URL (keep `deploy-pages.yml` publishing just that page).
