@@ -126,6 +126,9 @@ class Handlers:
             or callback.action not in KIND_ACTIONS[note["kind"]]
         ):
             return _Effects(answer="This message is not active any more.", markup=(*here, {}))
+        if callback.token != note["state_token"]:
+            # Not a button this bot put on this message; leave the message as it is.
+            return _Effects(answer="Unknown button.")
         if note["resolved_at"] is not None:
             return _Effects(answer=f"Already handled ({note['resolution']}).")
         entity = store.load_entity(conn, callback.entity_type, callback.entity_id, for_update=True)
@@ -148,7 +151,7 @@ class Handlers:
         token = current_token(
             note["kind"], status, None if entity is None else entity.get("updated_at")
         )
-        if callback.token != note["state_token"] or token != note["state_token"]:
+        if token != note["state_token"]:
             store.resolve_ids(conn, [note["id"]], "superseded")
             now = f"now <i>{escape_html(status)}</i>" if status else "it no longer exists"
             return _Effects(

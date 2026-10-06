@@ -120,3 +120,26 @@ party.
 ## 7. Decisions needed
 
 See `docs/planning/DECISIONS.md` **D-21** (proposed) and `OPEN_QUESTIONS.md` Q14–Q16.
+
+## 8. As built (V1.1b, 2026-10-06)
+
+Implementation: `services/api/src/fhc_api/admin_bot/` (details in `docs/architecture/LOCAL_ADMIN.md`,
+"Telegram admin bot"). Differences from the proposal above, and facts re-checked against Bot API 10.3:
+
+- **State token:** 8 hex characters (not 4), from SHA-256 of `updated_at` (events) or `status`
+  (applications). `callback_data` is at most 50 bytes.
+- **Press age:** `CallbackQuery` carries no press time, so the age is that of the bot's message
+  (`sent_at` in `app.bot_notifications`, database clock). An expired press is refused and the next
+  scan sends a fresh message with new buttons.
+- **Reject:** Reject → Confirm / Cancel → reason prompt (`force_reply`, reply within 15 min).
+  Request changes → reason prompt directly. Publish → Confirm / Cancel.
+- **Stale messages are retired proactively:** each scan edits messages whose entity changed elsewhere
+  (admin UI, another admin) to remove their buttons.
+- **Re-checked (2026-10-06):** `getUpdates` `offset`/`timeout`/`allowed_updates` semantics;
+  `CallbackQuery.message` is a `MaybeInaccessibleMessage` (`date` 0 when inaccessible);
+  `answerCallbackQuery` `text` 0–200 characters; `ForceReply.input_field_placeholder` 1–64
+  characters; `sendMessage` `text` 1–4096 characters, `reply_parameters`, `link_preview_options`;
+  `editMessageText` / `editMessageReplyMarkup` return the edited `Message`.
+- **Not re-verified, to confirm in the real-bot E2E (B5):** that `editMessageText` without
+  `reply_markup` removes the inline keyboard (relied on for outcome edits), and the exact client
+  display of callback answers.

@@ -154,6 +154,25 @@ def test_every_admin_gets_a_message_and_one_decision_resolves_all(
     assert "reply_markup" not in fake.bodies("editMessageText")[0]
 
 
+def test_a_backlog_drains_over_several_scans(
+    client: TestClient, fake: FakeTelegram, runner: AdminBotRunner, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    monkeypatch.setattr(outbox, "MAX_SENDS_PER_KIND", 1)
+    first = in_review(client, title="Pytest M3 First")
+    second = in_review(client, title="Pytest M3 Second")
+    ids = {UUID(first["id"]).hex, UUID(second["id"]).hex}
+
+    def ours() -> int:
+        return sum(len(fake.sent_about(entity_hex)) for entity_hex in ids)
+
+    runner.scan()
+    assert ours() == 1
+    runner.scan()
+    assert ours() == 2  # the already-notified event no longer blocks the next one
+    runner.scan()
+    assert ours() == 2
+
+
 def test_send_failure_releases_the_claim(
     client: TestClient, db: Conn, fake: FakeTelegram, runner: AdminBotRunner
 ) -> None:
@@ -387,7 +406,8 @@ def test_tampered_token_is_refused(
     fake.press(data[:-8] + "00000000", message_id_of(fake, review))
     runner.poll_once(0)
     assert get_event(client, event["id"])["status"] == "in_review"
-    assert fake.answers() == ["Outdated: this changed since the message was sent."]
+    assert fake.answers() == ["Unknown button."]
+    assert notifications(db, event["id"])[0]["resolution"] is None  # real buttons still work
 
 
 def test_old_buttons_expire_and_a_fresh_message_follows(

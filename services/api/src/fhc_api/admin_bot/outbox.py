@@ -28,8 +28,11 @@ from fhc_api.sources import repository as sources_repository
 from fhc_api.telegram.client import TelegramAPIError, TelegramError
 from fhc_api.telegram.formatting import escape_html
 
-# Entities per kind and scan; the rest follow in later scans.
-MAX_ENTITIES_PER_KIND = 10
+# Entities considered per kind and scan (oldest first), and new messages per kind and scan.
+# Already-notified entities are skipped before the send limit applies, so a backlog drains
+# over successive scans.
+MAX_CANDIDATES = 500
+MAX_SENDS_PER_KIND = 10
 # Telegram asks bots not to send more than about one message per second to one chat.
 SEND_PACING_S = 1.0
 # After "bot was blocked" / "can't initiate conversation" (403), stop trying that chat
@@ -125,10 +128,10 @@ class Outbox:
         items: list[Outgoing] = []
         event_kinds: tuple[Kind, ...] = ("review", "publish")
         for kind in event_kinds:
-            events = store.events_in_status(conn, KIND_STATUS[kind], MAX_ENTITIES_PER_KIND)
+            events = store.events_in_status(conn, KIND_STATUS[kind], MAX_CANDIDATES)
             items += self._missing(conn, kind, "event", events)
         for entity_type in ("community_application", "team_application"):
-            rows = store.new_applications(conn, entity_type, MAX_ENTITIES_PER_KIND)
+            rows = store.new_applications(conn, entity_type, MAX_CANDIDATES)
             items += self._missing(conn, "application", entity_type, rows)
         return items
 
@@ -142,7 +145,7 @@ class Outbox:
         admins = sorted(
             chat for chat in self._ctx.config.admin_ids if self._paused_chats.get(chat, 0) <= now
         )
-        items = []
+        items: list[Outgoing] = []
         for row in rows:
             status = row["status"]
             token = current_token(kind, status, row.get("updated_at"))
@@ -151,6 +154,8 @@ class Outbox:
             chats = tuple(chat for chat in admins if (row["id"], token, chat) not in live)
             if not chats:
                 continue
+            if len(items) == MAX_SENDS_PER_KIND:
+                break  # the rest follow in later scans
             items.append(
                 Outgoing(
                     entity_type=entity_type,
