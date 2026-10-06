@@ -21,7 +21,7 @@
 | Q3 | Will "Support the Project" include donation links? Vercel Hobby is non-commercial only | Plan choice | M5 (copy only) |
 | Q4 | Domain: owner decided 2026-10-06 to keep `firat-hackathon-community.vercel.app` for now | — | resolved |
 | Q8 | Will anyone besides the owner use the admin in the next 6 months? | If yes, local token auth is insufficient | Architecture |
-| Q9 | KVKK notice: draft in `docs/legal/KVKK_AYDINLATMA_METNI.md` (controller Bilal Abiç, contact bilalabic78@gmail.com, retention 12 months). **Open:** owner review + cross-border transfer basis (`docs/legal/README.md`) | Required before the forms go live | Cutover |
+| Q9 | KVKK notice: approved 2026-10-06 and live at `/aydinlatma-metni` (D-22; the transfer-basis risk is accepted by the owner, R-20) | — | resolved |
 | Q10 | Keep admin + API code in this public repo? (Recommended: yes, no secrets in code) | Repo split | M1 |
 | Q11 | Does anyone consume `events.json` directly? | Keep a JSON endpoint on the new site? | M7 |
 | Q12 | Category vocabulary for filters | Filters, later LLM labels | M2 |

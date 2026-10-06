@@ -25,6 +25,7 @@ export const nav = {
 export const footer = {
   line: "Gönüllüler tarafından yürütülen açık kaynak bir topluluk projesi.",
   github: "GitHub",
+  privacy: "Aydınlatma metni",
   sources:
     "Etkinlik bilgileri resmî kaynaklardan derlenir. Başvurmadan önce resmî sayfayı kontrol et.",
 } as const;
@@ -244,11 +245,9 @@ export const form = {
   needsJavaScript:
     "Formu göndermek için tarayıcında JavaScript açık olmalı. JavaScript'i açıp sayfayı yenile.",
   honeypotLabel: "Bu alanı boş bırak",
-  consentLabel: "Aydınlatma metnini okudum; bilgilerimin bu başvuru için işlenmesini kabul ediyorum.",
+  consentLabel:
+    "Aydınlatma metnini okudum; bilgilerimin bu başvuru için işlenmesine ve metinde belirtilen yurt dışındaki hizmet sağlayıcılara aktarılmasına açık rıza veriyorum.",
   privacyTitle: "Aydınlatma metni",
-  privacyDraftBadge: "TASLAK – yayına alınmadan önce onaylanacak",
-  privacyDraft:
-    "Kişisel verilerin korunmasına ilişkin aydınlatma metni (KVKK) hazırlanmaktadır. Metin; verilerin hangi amaçla işlendiğini, ne kadar süre saklandığını ve silme talebinin nasıl iletileceğini açıklayacak ve proje sahibi tarafından onaylandıktan sonra burada yayımlanacaktır.",
   errors: {
     fullName: "Ad soyad 2 ile 120 karakter arasında olmalı.",
     tooLong(max: number): string {

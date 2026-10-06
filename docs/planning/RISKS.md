@@ -21,3 +21,4 @@
 | R-15 | Telegram delete limits unclear (48 h) | Medium | Low | Edit is primary correction; test on a private channel (T-1) | V1.1 |
 | R-16 | Laptop is a single point for admin work (no backup of local-only state) | Medium | Low | No canonical data is local; only `.env` files — keep a password-manager copy | V1 |
 | R-19 | Local Supabase stack reachable from the LAN (0.0.0.0 bindings + Docker firewall allow rule on Public profile) | Medium | High (local data) | SECURITY S8: bind Docker to 127.0.0.1 or disable the rule; stop the stack when idle | Accepted by owner 2026-09-28 |
+| R-20 | KVKK m. 9: explicit consent may be an insufficient basis for regular transfers abroad (Supabase EU, Vercel US, Telegram first names) | Medium | High (regulatory) | Accurate public notice incl. a separate transfer consent; data minimised (no IP/UA; Telegram gets first names only); 12-month retention. Owner accepted the risk 2026-10-06 (D-22); revisit with legal advice | Owner |

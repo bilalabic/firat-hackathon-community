@@ -1,7 +1,9 @@
-# Kişisel Verilerin Korunması Hakkında Aydınlatma Metni (TASLAK)
+# Kişisel Verilerin Korunması Hakkında Aydınlatma Metni
 
-> **Durum:** Taslak, 2026-10-06. Proje sahibinin incelemesi ve onayı bekleniyor. Hukuki danışmanlık
-> değildir. §6'daki yurt dışına aktarım dayanağı onaydan önce netleştirilmelidir.
+> **Durum:** Proje sahibi tarafından 2026-10-06'da onaylandı ve `/aydinlatma-metni` adresinde
+> yayımlandı. Yayımlanan metnin tek kaynağı `apps/web/src/lib/privacy.ts` dosyasıdır; bu dosya
+> onun bir kopyasıdır. Hukuki danışmanlık değildir. Yurt dışı aktarım dayanağı için D-22'ye
+> bakın.
 
 Bu metin, 6698 sayılı Kişisel Verilerin Korunması Kanunu ("KVKK") madde 10 uyarınca, Fırat Hackathon
 Community internet sitesindeki **Topluluğa Katıl** ve **Ekibe Katıl** formları aracılığıyla
@@ -45,8 +47,9 @@ Verilerin pazarlama, reklam veya profil çıkarma amacıyla kullanılmaz ve sat�
 Veriler, internet sitesindeki formlar aracılığıyla, doğrudan senin tarafından ve elektronik ortamda
 toplanır.
 
-Hukuki sebep, KVKK m. 5/1 uyarınca **açık rızandır**. Formu göndermeden önce bu metni okuduğunu ve
-verilerinin işlenmesini kabul ettiğini işaretlersin. Bu kutu işaretlenmezse başvuru gönderilemez.
+Hukuki sebep, KVKK m. 5/1 uyarınca **açık rızandır**. Formu göndermeden önce bu metni okuduğunu,
+verilerinin işlenmesine ve §6'da açıklanan yurt dışı aktarıma açık rıza verdiğini işaretlersin. Bu
+onay verilmeden başvuru gönderilemez.
 
 ## 5. Aktarım
 
@@ -65,14 +68,8 @@ Hizmetin çalışması için şu hizmet sağlayıcılar kullanılır:
 Yukarıdaki sağlayıcıların sunucuları yurt dışında olduğundan, verilerin Türkiye dışına aktarılmış
 olur.
 
-> **[ONAY ÖNCESİ KARAR GEREKİR]** 1 Haziran 2024'te yürürlüğe giren değişiklikle KVKK m. 9, düzenli
-> yurt dışı aktarımlar için önce *yeterlilik kararı*, yoksa *uygun güvenceler* (örneğin Kurul'un
-> standart sözleşmesi; imzadan sonra 5 iş günü içinde Kurum'a bildirim) öngörür. Açık rıza ise
-> yalnızca **arızi** aktarımlar için kullanılabilir. Bu metne yazılacak dayanak, fiilen yapılan
-> işleme uygun olmalıdır. Seçenekler için `docs/legal/README.md` dosyasına bakın.
->
-> Geçici ifade (dayanak netleşince güncellenecek): "Verilerin, KVKK m. 9'da öngörülen şartlara uygun
-> olarak yurt dışındaki hizmet sağlayıcılara aktarılır."
+Bu aktarım, formda ayrıca onayladığın **açık rızana** dayanır (KVKK m. 9). Rıza vermek
+istemezsen başvuru formunu kullanmadan e-posta ile de bizimle iletişime geçebilirsin.
 
 ## 7. Saklama süresi
 
@@ -98,4 +95,4 @@ Başvurunu **bilalabic78@gmail.com** adresine e-posta ile iletebilirsin. Başvur
 içinde ücretsiz olarak sonuçlandırılır.
 
 ---
-Metin sürümü: `2026-10-community-v1` (Topluluğa Katıl) / `2026-10-team-v1` (Ekibe Katıl)
+Metin sürümü: `2026-10-community-v2` (Topluluğa Katıl) / `2026-10-team-v2` (Ekibe Katıl)

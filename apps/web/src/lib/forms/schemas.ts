@@ -6,8 +6,9 @@ import { z } from "zod";
 
 import { communityForm, form, teamForm } from "../copy";
 
-export const COMMUNITY_CONSENT_VERSION = "2026-10-community-v1";
-export const TEAM_CONSENT_VERSION = "2026-10-team-v1";
+// v2: the approved KVKK notice (lib/privacy.ts) incl. explicit consent to the transfer abroad.
+export const COMMUNITY_CONSENT_VERSION = "2026-10-community-v2";
+export const TEAM_CONSENT_VERSION = "2026-10-team-v2";
 
 export type FieldErrors = Record<string, string>;
 export type ParseResult<T> =
