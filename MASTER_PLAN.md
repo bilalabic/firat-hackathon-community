@@ -330,3 +330,27 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - `NEXT_PUBLIC_SITE_URL` falls back to `VERCEL_PROJECT_PRODUCTION_URL`.
 - The CLI upload failed (the CLI does not use `.gitignore`), so deploys come from Git.
 - `vercel link` appended `.vercel` and `.env*` to the root `.gitignore`. Reverted, because `.env*` would re-ignore `.env.example` files.
+
+**Production verification (2026-10-06):** https://firat-hackathon-community.vercel.app
+
+| MVP | Result |
+|---|---|
+| #6 | Cloud Data API: `events_public` 200 (6 rows); private tables 404; `app`/`public` profiles 406; **no apikey → 401** |
+| #8 | 17 production JS chunks (701 KiB) + 5 pages scanned: 0 matches for secret key, publishable key, DB URL or project ref |
+| #12 | Event created → submitted → approved → published via the local API: visible on the live list after **4 s**. Unpublished: gone after 4 s. Test data deleted |
+| #13 | Local API stopped: all public pages 200 |
+| #15 | RPC submission 204; anon cannot read applications (404); admin API lists it; test row deleted |
+| #16 | Detail page canonical + JSON-LD Event; OG card PNG renders Turkish glyphs; sitemap has 11 URLs; malformed slug 404 |
+| #17 | Lighthouse mobile `/hackathonlar`: Accessibility 100, SEO 100, Best Practices 100. **Performance 93 / 95 / 94** (3 runs; LCP 2.6 s, FCP 1.0 s, CLS 0): borderline, see follow-ups |
+| #21 | Vercel cron listed (`0 3 * * *`); manual trigger authenticated with `CRON_SECRET` and recorded the heartbeat; GitHub workflow recorded its heartbeat; both fresh on Overview |
+| Security headers | X-Frame-Options DENY, CSP frame-ancestors, nosniff, Referrer-Policy on production |
+
+The local admin API now runs against the cloud DB through the session pooler (about 108 ms per query from the laptop). Revalidation is configured (`WEB_BASE_URL`, `WEB_REVALIDATE_SECRET`).
+
+**Open M7 items:**
+- (owner) Approve the KVKK notice text (Q9). The forms are live on the production URL with the TASLAK placeholder, but the site has not been announced. **Cutover (runbook §7) waits for this.**
+- (owner) Move the DB password from `%USERPROFILE%\fhc-supabase-db-password.txt` into a password manager and delete the file. Also keep a copy of `services/api/.env`.
+- (owner) Supabase → Settings → API Keys: disable the legacy `anon`/`service_role` keys. Nothing uses them; web and keep-alive use the publishable key.
+- (owner) Domain decision (Q4); the default `*.vercel.app` is in use.
+- Follow-up: list-page LCP (2.6 s on simulated mobile). The list is likely rendered client-side after hydration; render the initial list on the server so Performance clears 95 reliably.
+- Follow-up (API gaps from M4): `GET /sources/{id}`, deletes, revalidation status, health-only Ollama check.
