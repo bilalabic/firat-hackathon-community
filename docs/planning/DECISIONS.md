@@ -121,3 +121,14 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
   3. **Monitoring:** `api.keep_alive` records `app.heartbeats(source, last_seen_at)` and runs a real read. The admin Overview shows each source's last heartbeat and turns red after 48 h. Supabase itself emails a warning about 1 week before a pause
 - **Pass 1:** Vercel Cron and GitHub `schedule` both verified in official docs. **Pass 2:** GitHub disables scheduled workflows in public repos after 60 days without repo activity, and scheduled runs can be delayed or dropped under load. Vercel Cron is best-effort with no retries, so each one alone is insufficient. Two schedulers 12 h apart + monitoring + Supabase's warning email give three independent chances to notice. The endpoint is idempotent (it sets a timestamp, never increments)
 - **Status:** Accepted (2026-09-28)
+
+### D-21 Admin decisions via Telegram
+- **Options:** A local long-polling bot inside the admin API · B cloud webhook (Vercel / Edge Function) with DB write access · C Telegram Mini App hosting the admin UI
+- **Proposed:** A for V1.1b. The bot sends review/approval/application notifications with inline buttons and executes them through the existing service layer.
+  - Guards: admin allowlist by numeric user id; stale-press protection (state token in `callback_data`, max press age); two-step confirm for Publish/Reject; persisted update offset; audit table `app.admin_actions`.
+  - Personal data in Telegram: counts and first names only.
+- **Reason:** keeps one writer (D-05), the publishable-key-only public site (D-08) and the token on the laptop. No new public endpoint.
+- **Trade-off:** decisions run only while the laptop/API is on. Telegram keeps undelivered updates for up to 24 h; stale presses are refused.
+- **Revisit:** if approvals are routinely needed while the laptop is off. Then move the API to an always-on host rather than splitting logic into a webhook.
+- **Pass 1:** Bot API 10.3: `callback_data` 1–64 bytes, getUpdates long polling, 24 h retention, webhook `secret_token`; webhook and getUpdates are mutually exclusive; Mini App initData HMAC. **Pass 2:** B and C each widen the attack surface and duplicate or relocate business rules; A reuses M3/M6 code.
+- **Status:** Proposed (owner decision pending)
