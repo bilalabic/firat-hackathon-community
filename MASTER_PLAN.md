@@ -354,3 +354,39 @@ The local admin API now runs against the cloud DB through the session pooler (ab
 - (owner) Domain decision (Q4); the default `*.vercel.app` is in use.
 - Follow-up: list-page LCP (2.6 s on simulated mobile). The list is likely rendered client-side after hydration; render the initial list on the server so Performance clears 95 reliably.
 - Follow-up (API gaps from M4): `GET /sources/{id}`, deletes, revalidation status, health-only Ollama check.
+
+### V1.1b Admin decisions via Telegram (2026-10-06): done locally
+
+**Built by a subagent, reviewed independently, fixes re-verified by the orchestrator.**
+- **Admin bot** (`@firathackathonadmin_bot`, separate from the future channel bot): a long-polling thread inside the local admin API. Disabled by default; misconfiguration never stops the API.
+- **Outbox in the DB**:
+  - events in review, approved events awaiting publish, and new community/team applications each produce exactly one message;
+  - restarts never duplicate;
+  - unpressed messages expire after 12 h and are re-sent;
+  - messages decided elsewhere are retired.
+- **Actions** (through the same services as the admin UI): Approve, Request changes (reason), Reject (confirm + reason), Publish (confirm), and application status changes.
+  - The two-step confirm is enforced server-side.
+  - Stale buttons are refused using a state token from `updated_at` plus the message age.
+  - Allowlist by numeric user id; private chat only.
+- **Audit:** `app.admin_actions` records actions from the bot and the admin UI in the same transaction as the change.
+- **Personal data:** application messages carry only first name, type and channel.
+- **Migration:** `20261006120000_admin_bot.sql` adds `bot_state`, `bot_notifications`, `bot_pending_replies` and `admin_actions`, plus `updated_at` with a trigger on both application tables.
+- **Status:** `GET /admin-bot/status` and a Settings card; `whoami` CLI.
+
+**Checks (re-run by the orchestrator):**
+- ruff, ruff format, mypy (96 files): pass. `pytest -W error`: 578 passed, 1 skipped.
+- pgTAP: 68 tests pass.
+- admin lint, typecheck, test and build: pass.
+- A simulated E2E with the real runner thread against a fake Bot API and the local DB passed.
+
+**Review 2 (independent subagent):**
+- No critical or high findings.
+- Fixed:
+  - 1 medium: an application set back to `new` was never re-notified;
+  - low: per-update validation (poison updates), server-side confirm stage, button removal on "already handled", stop checks during scans, expiry of unpressed messages;
+  - nits and extra reply tests.
+
+**Owner setup done:** bot created, token in the local `.env`, allowlist = the owner's numeric id. **Remaining:**
+- apply the migration to the cloud project;
+- enable the bot;
+- real-phone E2E, including confirming that `editMessageText` without `reply_markup` removes the keyboard.
