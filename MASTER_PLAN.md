@@ -401,4 +401,4 @@ The local admin API now runs against the cloud DB through the session pooler (ab
 - **Application flow:** a test application through the public RPC arrived as a message with first name, type and channel only. **Contacted** set its status; the audit row is `telegram:<owner id>` `set_status`.
 - Notifications resolved as approved, published and contacted.
 - Test data (event, application, notifications, audit rows) deleted; the event was unpublished first so the site cache was revalidated.
-- Open: owner confirmation that the inline buttons disappeared after the presses (`editMessageText` without `reply_markup`).
+- Confirmed by the owner: the inline buttons disappear after a decision (`editMessageText` without `reply_markup` removes the keyboard). V1.1b is fully verified.
