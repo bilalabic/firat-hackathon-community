@@ -131,4 +131,4 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Trade-off:** decisions run only while the laptop/API is on. Telegram keeps undelivered updates for up to 24 h; stale presses are refused.
 - **Revisit:** if approvals are routinely needed while the laptop is off. Then move the API to an always-on host rather than splitting logic into a webhook.
 - **Pass 1:** Bot API 10.3: `callback_data` 1–64 bytes, getUpdates long polling, 24 h retention, webhook `secret_token`; webhook and getUpdates are mutually exclusive; Mini App initData HMAC. **Pass 2:** B and C each widen the attack surface and duplicate or relocate business rules; A reuses M3/M6 code.
-- **Status:** Proposed (owner decision pending)
+- **Status:** Accepted (2026-10-06): option A; separate admin bot; no applicant details in Telegram. Plan: docs/planning/V1_1B_TELEGRAM_ADMIN.md

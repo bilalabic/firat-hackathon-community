@@ -10,6 +10,9 @@
 | Q6 | Collect participants via web form, including WhatsApp phone? | Yes: one Join Community form. Phone only when WhatsApp is the preferred channel |
 | Q7 | Install `uv` and Ollama on Windows | Approved (D-13) |
 | — | Version order | Telegram V1.1, discovery V1.4 (D-11) |
+| Q14 | Telegram admin actions | Approve / Request changes / Reject / Publish (confirm) + application status (2026-10-06) |
+| Q15 | One or two bots | Separate admin bot (2026-10-06) |
+| Q16 | Applicant details in Telegram | No: first name + channel + type only (2026-10-06) |
 
 ## Still open (deferred by owner on 2026-09-28; Q3/Q9/Q13 are needed by M5, Q4 by M7)
 
@@ -25,6 +28,3 @@
 | Q13 | Is there an existing WhatsApp community/group, or will it be created too? | Community page copy and manual invite process | M5 |
 | INV-T1 | Telegram: 48 h delete rule for channel admins | Correction workflow | V1.1 |
 | INV-C1..C4 | Devpost ToS, Eventbrite API status, DoraHacks ToS, Patika robots details | Discovery source list | V1.4 |
-| Q14 | Telegram admin: which decisions should the bot handle? (proposed: event approve / request changes / reject, publish with confirm, application status) | V1.1b scope | V1.1b |
-| Q15 | One bot for both channel publishing and admin chat, or a separate admin bot? (recommend separate) | Token separation | V1.1 |
-| Q16 | May applicant details (beyond first name) be sent to Telegram? It affects the KVKK notice (Q9) | Personal data transfer | V1.1b |
