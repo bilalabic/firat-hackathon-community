@@ -25,3 +25,6 @@
 | Q13 | Is there an existing WhatsApp community/group, or will it be created too? | Community page copy and manual invite process | M5 |
 | INV-T1 | Telegram: 48 h delete rule for channel admins | Correction workflow | V1.1 |
 | INV-C1..C4 | Devpost ToS, Eventbrite API status, DoraHacks ToS, Patika robots details | Discovery source list | V1.4 |
+| Q14 | Telegram admin: which decisions should the bot handle? (proposed: event approve / request changes / reject, publish with confirm, application status) | V1.1b scope | V1.1b |
+| Q15 | One bot for both channel publishing and admin chat, or a separate admin bot? (recommend separate) | Token separation | V1.1 |
+| Q16 | May applicant details (beyond first name) be sent to Telegram? It affects the KVKK notice (Q9) | Personal data transfer | V1.1b |
