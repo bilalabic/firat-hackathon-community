@@ -107,6 +107,7 @@ All require `Authorization: Bearer <ADMIN_API_TOKEN>` except `/health`.
 | `GET /system/db` | `check_database` | `{ok, latency_ms, role, server_version}`; 503 when the DB is unreachable |
 | `GET /llm/check` | `llm_check` | Provider health (`ok`, `not_running`, `model_missing`, `error`) plus one schema-constrained test call when healthy. A rejected `OLLAMA_*` configuration (e.g. a non-local URL) does not stop the API: health is `error` with the configuration message |
 | `GET /telegram/check` | `telegram_check` | `getMe` + `getChat` + `getChatMember`; status `not_configured`, `invalid_token` (also for a malformed `TELEGRAM_BOT_TOKEN`, which does not stop the API), `chat_not_found`, `bot_not_admin`, `missing_rights`, `ok` or `error`; plus `missing_rights`, `missing_optional_rights` (delete, information only) and `excess_rights` (rights V1 does not need, warning only) |
+| `GET /admin-bot/status` | `admin_bot_status` | Telegram admin bot (V1.1b): `enabled`, `state` (`disabled`, `config_error`, `stopped`, `starting`, `running`, `error`), `running`, `config_error`, `bot_username`, `allowlist_size`, `max_press_age_hours`, `scan_interval_seconds`, `last_poll_at`, `last_scan_at`, `last_error(_at)`, `pending_notifications`, `pending_replies`. No Telegram call; never contains the token |
 | `GET /openapi.json` | (not in the schema) | The OpenAPI schema; requires the token like every other route |
 
 ### Module layout
@@ -127,6 +128,8 @@ services/api/src/fhc_api/   (uv packaged layout; tests in services/api/tests/)
 ├── publishing/          hashing.py (publishable projection + sha256)
 ├── telegram/            client.py (httpx2), check.py, formatting.py, router.py (V1: /telegram/check)   [M6]
 ├── llm/                 provider.py (Protocol), ollama.py, untrusted.py, router.py (V1: /llm/check)   [M6]
+├── admin_bot/           settings, codec, messages, store, outbox, handlers, runner, bot, router,
+│                        whoami (Telegram admin decisions)                                          [V1.1b]
 ├── overview/            router.py (counters + heartbeats)
 ├── system/              router.py (/system/db)
 └── web/                 revalidate.py (POST to public site, best effort)
@@ -178,7 +181,30 @@ OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3.5:0.8b        # default; placeholder until the V1.2 benchmark
 TELEGRAM_BOT_TOKEN=              # optional in V1
 TELEGRAM_CHANNEL_ID=             # optional in V1
+TELEGRAM_ADMIN_ENABLED=false     # V1.1b admin bot; default false
+TELEGRAM_ADMIN_BOT_TOKEN=        # a separate bot (not TELEGRAM_BOT_TOKEN)
+TELEGRAM_ADMIN_USER_IDS=         # numeric ids, comma-separated (whoami helper)
+TELEGRAM_ADMIN_MAX_PRESS_AGE_H=12
+TELEGRAM_ADMIN_SCAN_INTERVAL_S=60
 ```
+
+The `TELEGRAM_ADMIN_*` values are read as raw strings and parsed by `admin_bot/settings.py`, so a bad value (unknown boolean, empty or non-numeric allowlist, out-of-range number, malformed token, the channel bot's token) only disables the bot and is reported by `GET /admin-bot/status`; the API starts normally.
+
+### Telegram admin bot (V1.1b, as built)
+
+Plan: `docs/planning/V1_1B_TELEGRAM_ADMIN.md` (D-21). Only the private chat with the separate admin bot is used.
+
+- **Lifecycle.** `AdminBot` is built by `create_app`; when enabled and valid, the lifespan starts one daemon thread (`fhc-admin-bot`) and stops it first on shutdown (before the Telegram client and the pool close). Loop: `getMe` once, then an outbox scan whenever due (or requested after an action), then `getUpdates` (`timeout` ≤ 10 s, `allowed_updates=["message","callback_query"]`, persisted `offset`). Any failure is logged without secrets or personal data, shown in the status, and followed by exponential backoff (2 s … 300 s; `retry_after` on 429; 10 min after `getMe` 401/404). Malformed updates are skipped (only their id is kept and confirmed). An update whose handling fails with a database *connection* error is not confirmed and is retried after the backoff, at most 5 times; any other error (e.g. a cancelled statement) is logged and the update confirmed. Shutdown: the stop flag ends backoff and pacing waits at once and is checked between updates, sends and edits, so the thread stops after the call in progress (long poll ≤ 20 s HTTP timeout, other Bot API calls ≤ 10 s, pool checkout ≤ 10 s, statements ≤ 15 s); `stop()` waits at most 25 s, then logs a warning and leaves the daemon thread to exit. Normally shutdown takes well under a second. The handler commits before the offset is saved: a crash in between re-processes that update after a restart, which is harmless except that a Request changes / Confirm reject press can send a second reason prompt.
+- **Connections.** Every unit of work takes a short pool checkout; no connection is held during a Telegram call or the long poll.
+- **Outbox** (`outbox.py`). Each scan retires live messages by editing them without buttons: `superseded` when their entity changed (status/`updated_at` changed, decided in the admin UI, deleted), `expired` when unpressed for longer than `TELEGRAM_ADMIN_MAX_PRESS_AGE_H` (a fresh message follows in the same scan, so a pending decision is re-sent about every 12 h). It then sends one message per missing slot: events in `in_review` (review: Approve / Request changes / Reject, with the deterministic review signals, no network URL check), `approved` events (publish prompt: Publish / Later), `new` community and team applications (Contacted / Accepted / Declined / Spam). A slot `(entity, kind, state token, admin chat)` is claimed in `app.bot_notifications` before `sendMessage` (partial unique index, `ON CONFLICT DO NOTHING`), so restarts and concurrent scans never send it twice; a failed send releases the claim (a lost response after a successful send can cause one duplicate on retry); a claim left by a crash is freed after 10 min. At most 10 entities get new messages per candidate list (review events, publish events, community applications, team applications) and scan, 1 s apart; a chat that answered 403 is skipped for 15 min.
+- **Buttons** (`codec.py`). `callback_data = v1:<action>:<e|c|t>:<id 32 hex>:<token 8 hex>` (≤ 50 bytes). Token: first 8 hex of SHA-256 of the entity's `updated_at` (the migration adds `updated_at` and its trigger to both application tables), so an application set back to `new` is notified again.
+- **Presses** (`handlers.py`). Allowlist by numeric user id and chat id = user id (private); strangers get "Not allowed." and a content-free log line (warning at most once per 10 min, then debug); messages from strangers get no reply. Then the message must be a live notification of this bot (looked up by chat and message id, row locked), the button's token must match it, its age (`sent_at`, DB clock) must be ≤ `TELEGRAM_ADMIN_MAX_PRESS_AGE_H` (otherwise it is marked `expired` and the next scan sends a fresh message), and the token must match the entity as it is now (row locked; otherwise "Outdated", marked `superseded`). Actions run through `events.service.transition_event` / `community.service.set_status` in the same transaction (same guards, notes, timestamps, 409/422 answers). Publish and Reject replace the buttons with Confirm / Cancel and record the stage on the notification (`confirm_action`, `confirm_at`); a Confirm press is accepted only for the recorded action within 10 min (a crafted Confirm without the first press is refused); Cancel clears it. A press on an already resolved message also removes its buttons. Reject (after confirm) and Request changes send a `force_reply` prompt; the reply (1–1000 characters, as a reply to that prompt in the same chat) executes the action with the reason. A reply has no press-age check of its own: the 15-min prompt TTL and the state token bound it. A refused reason keeps the prompt open. After commit: answer the press, edit every admin's message for that entity to the outcome, revalidate the public site when the event enters or leaves `published` (best effort), request a scan (e.g. the publish prompt after Approve).
+- **Audit.** `app.admin_actions` gets one row per executed transition and application status change, from the admin UI (`admin_ui`) and Telegram (`telegram:<user id>`), in the same transaction as the change. `detail` holds `from`/`to` (and whether a reason was given), never text or personal data.
+- **Personal data.** Application messages carry the type, the first name and the chosen channel only.
+- **`whoami`.** `uv run python -m fhc_api.admin_bot.whoami` (API stopped or bot disabled) prints the numeric ids of users who messaged the bot; it does not confirm updates.
+- **Tests.** Unit (codec, config, messages, client additions, redaction), integration with a fake Bot API (MockTransport) and rolled-back transactions (`test_admin_bot_flow.py`), wiring/lifespan and an end-to-end run of the real thread (`test_admin_bot_app.py`), audit (`test_admin_audit.py`), pgTAP `04_admin_bot.test.sql`.
+- **Known limits.** Telegram keeps undelivered updates for 24 h; presses made while the API is off longer than that are lost. `app.bot_notifications` and `app.admin_actions` are not pruned (small, no personal data). Exactly one API process may run with the bot enabled (a second poller gets 409 and reports it).
+- **Settings card.** "Telegram admin bot" shows the state, configuration or last error, bot, allowlist size, last poll/scan and pending counts.
 
 ### Database role `admin_backend`
 

@@ -12,6 +12,7 @@ from uuid import UUID
 from psycopg import errors as pg_errors
 from psycopg.rows import DictRow
 
+from fhc_api.common import audit
 from fhc_api.common.errors import conflict, not_found, unprocessable
 from fhc_api.common.http import BlockedUrlError, check_url, is_public_address
 from fhc_api.common.normalize import SLUG_MAX_LENGTH, normalize_url, slugify
@@ -216,7 +217,10 @@ def _append_note(notes: str | None, action: EventAction, reason: str) -> str:
     return combined
 
 
-def transition_event(conn: Conn, event_id: UUID, body: EventTransition) -> WriteResult:
+def transition_event(
+    conn: Conn, event_id: UUID, body: EventTransition, *, actor: str
+) -> WriteResult:
+    """`actor` is recorded in `app.admin_actions` (`admin_ui` or `telegram:<user id>`)."""
     action = body.action
     sources, target = TRANSITIONS[action]
     with conn.transaction():
@@ -242,4 +246,12 @@ def transition_event(conn: Conn, event_id: UUID, body: EventTransition) -> Write
         if body.reason:
             values["internal_notes"] = _append_note(current["internal_notes"], action, body.reason)
         row = repository.update(conn, event_id, values)
+        audit.record(
+            conn,
+            actor=actor,
+            action=action,
+            entity_type="event",
+            entity_id=event_id,
+            detail={"from": status, "to": target, "reason": body.reason is not None},
+        )
     return WriteResult(row, affects_public_site="published" in (status, target))

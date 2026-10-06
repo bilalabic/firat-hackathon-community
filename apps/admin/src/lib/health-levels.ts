@@ -2,7 +2,7 @@
 // the header indicator and the Settings page.
 
 import type { ApiResult } from "@/lib/api/errors"
-import type { DbCheck, LlmCheck, TelegramCheck } from "@/lib/api/types"
+import type { AdminBotStatus, DbCheck, LlmCheck, TelegramCheck } from "@/lib/api/types"
 
 /** ok = green, warn = amber, error = red, off = not configured (grey), unknown = not checked. */
 export type HealthLevel = "ok" | "warn" | "error" | "off" | "unknown"
@@ -63,4 +63,24 @@ export function telegramHealth(result: ApiResult<TelegramCheck>): HealthSummary 
     return { level: missing_optional_rights?.length || excess_rights?.length ? "warn" : "ok", text }
   }
   return { level: "error", text }
+}
+
+export const ADMIN_BOT_STATE_TEXT: Record<AdminBotStatus["state"], string> = {
+  disabled: "Disabled",
+  config_error: "Configuration error",
+  stopped: "Stopped",
+  starting: "Starting",
+  running: "Running",
+  error: "Error, retrying",
+}
+
+export function adminBotHealth(result: ApiResult<AdminBotStatus>): HealthSummary {
+  if (!result.ok) return apiFailed(result)
+  const { state, config_error, last_error } = result.data
+  const label = ADMIN_BOT_STATE_TEXT[state]
+  if (state === "disabled") return { level: "off", text: label }
+  if (state === "running") return { level: "ok", text: label }
+  if (state === "starting") return { level: "unknown", text: label }
+  const detail = config_error ?? last_error
+  return { level: state === "stopped" ? "warn" : "error", text: detail ? `${label}: ${detail}` : label }
 }

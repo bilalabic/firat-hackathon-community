@@ -300,10 +300,74 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/admin-bot/status": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Admin Bot Status */
+        get: operations["admin_bot_status"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 };
 export type webhooks = Record<string, never>;
 export type components = {
     schemas: {
+        /** AdminBotStatus */
+        AdminBotStatus: {
+            /**
+             * Enabled
+             * @description TELEGRAM_ADMIN_ENABLED
+             */
+            enabled: boolean;
+            /**
+             * State
+             * @description disabled (default), config_error (enabled but not started), stopped (not started yet or shut down), starting, running, error (retrying with backoff)
+             * @enum {string}
+             */
+            state: "disabled" | "config_error" | "stopped" | "starting" | "running" | "error";
+            /**
+             * Running
+             * @description The background thread is alive
+             */
+            running: boolean;
+            /** Config Error */
+            config_error?: string | null;
+            /** Bot Username */
+            bot_username?: string | null;
+            /** Allowlist Size */
+            allowlist_size: number;
+            /** Max Press Age Hours */
+            max_press_age_hours: number | null;
+            /** Scan Interval Seconds */
+            scan_interval_seconds: number | null;
+            /** Last Poll At */
+            last_poll_at?: string | null;
+            /** Last Scan At */
+            last_scan_at?: string | null;
+            /** Last Error */
+            last_error?: string | null;
+            /** Last Error At */
+            last_error_at?: string | null;
+            /**
+             * Pending Notifications
+             * @description Sent messages still waiting for a decision; null when the DB is down
+             */
+            pending_notifications: number | null;
+            /**
+             * Pending Replies
+             * @description Open reason prompts
+             */
+            pending_replies: number | null;
+        };
         /** ApplicationStatusUpdate */
         ApplicationStatusUpdate: {
             /**
@@ -1990,6 +2054,35 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["TelegramCheckResult"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    admin_bot_status: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["AdminBotStatus"];
                 };
             };
             /** @description Unauthorized */

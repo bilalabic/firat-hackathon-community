@@ -1,11 +1,11 @@
 import { describe, expect, it } from "vitest"
 
 import type { ApiResult } from "@/lib/api/errors"
-import type { LlmCheck, TelegramCheck } from "@/lib/api/types"
+import type { AdminBotStatus, LlmCheck, TelegramCheck } from "@/lib/api/types"
 
 import { ACTION_META, needsDialog } from "./events"
 import { formatAge, formatDateTime } from "./format"
-import { llmHealth, telegramHealth } from "./health-levels"
+import { adminBotHealth, llmHealth, telegramHealth } from "./health-levels"
 import { hrefWith, lastPage, pageOffset, parsePage } from "./paging"
 import { EMPTY_SOURCE_VALUES, buildSourcePayload } from "./sources"
 import { safeHttpUrl } from "./urls"
@@ -66,6 +66,26 @@ describe("health levels", () => {
     expect(telegramHealth(ok<TelegramCheck>({ ...base, status: "ok", excess_rights: ["can_promote_members"] })).level).toBe("warn")
     expect(telegramHealth(ok<TelegramCheck>({ ...base, status: "missing_rights", missing_rights: ["can_post_messages"] })).level).toBe("error")
     expect(telegramHealth(ok<TelegramCheck>({ ...base, status: "invalid_token" })).level).toBe("error")
+  })
+
+  it("maps admin bot states", () => {
+    const base: AdminBotStatus = {
+      enabled: true,
+      state: "running",
+      running: true,
+      allowlist_size: 1,
+      max_press_age_hours: 12,
+      scan_interval_seconds: 60,
+      pending_notifications: 0,
+      pending_replies: 0,
+    }
+    expect(adminBotHealth(ok<AdminBotStatus>({ ...base, enabled: false, state: "disabled" })).level).toBe("off")
+    expect(adminBotHealth(ok<AdminBotStatus>(base)).level).toBe("ok")
+    expect(adminBotHealth(ok<AdminBotStatus>({ ...base, state: "starting" })).level).toBe("unknown")
+    expect(adminBotHealth(ok<AdminBotStatus>({ ...base, state: "stopped" })).level).toBe("warn")
+    const misconfigured = adminBotHealth(ok<AdminBotStatus>({ ...base, state: "config_error", config_error: "TELEGRAM_ADMIN_USER_IDS is empty" }))
+    expect(misconfigured).toEqual({ level: "error", text: "Configuration error: TELEGRAM_ADMIN_USER_IDS is empty" })
+    expect(adminBotHealth(ok<AdminBotStatus>({ ...base, state: "error", last_error: "Telegram getUpdates timed out." })).text).toMatch(/timed out/)
   })
 
   it("reports 'not checked' when the API itself is down", () => {

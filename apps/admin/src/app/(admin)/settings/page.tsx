@@ -1,6 +1,8 @@
 import { Suspense } from "react"
 
 import {
+  ADMIN_BOT_TEXT,
+  AdminBotCheck,
   CheckFallback,
   DB_TEXT,
   DatabaseCheck,
@@ -34,6 +36,9 @@ export default function SettingsPage() {
           </Suspense>
           <Suspense fallback={<CheckFallback {...TELEGRAM_TEXT} />}>
             <TelegramCheck />
+          </Suspense>
+          <Suspense fallback={<CheckFallback {...ADMIN_BOT_TEXT} />}>
+            <AdminBotCheck />
           </Suspense>
           <RevalidationCheck />
         </Section>

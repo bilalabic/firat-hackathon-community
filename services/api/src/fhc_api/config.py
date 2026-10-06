@@ -42,6 +42,15 @@ class Settings(BaseSettings):
     TELEGRAM_BOT_TOKEN: SecretStr | None = None
     TELEGRAM_CHANNEL_ID: str | None = None
 
+    # Admin bot (V1.1b, D-21): a separate bot for review/application decisions. Kept as raw
+    # strings and parsed by `fhc_api.admin_bot.settings`, so a bad value only disables the
+    # bot (reported by GET /admin-bot/status) and never stops the API.
+    TELEGRAM_ADMIN_ENABLED: str | None = None  # true/false, default false
+    TELEGRAM_ADMIN_BOT_TOKEN: SecretStr | None = None
+    TELEGRAM_ADMIN_USER_IDS: str | None = None  # numeric Telegram user ids, comma-separated
+    TELEGRAM_ADMIN_MAX_PRESS_AGE_H: str | None = None  # default 12
+    TELEGRAM_ADMIN_SCAN_INTERVAL_S: str | None = None  # default 60
+
     @field_validator("ADMIN_API_TOKEN")
     @classmethod
     def _not_the_placeholder(cls, value: SecretStr) -> SecretStr:

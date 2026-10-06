@@ -167,4 +167,6 @@ export const api = {
   // OLLAMA_TIMEOUT_S defaults to 120 s; the first call after a model load is slow.
   checkLlm: () => request("llm_check", "GET", "/llm/check", { timeoutMs: 150_000 }),
   checkTelegram: () => request("telegram_check", "GET", "/telegram/check", { timeoutMs: 45_000 }),
+  // Reads in-process state plus two counts; no Telegram call.
+  adminBotStatus: () => request("admin_bot_status", "GET", "/admin-bot/status"),
 }

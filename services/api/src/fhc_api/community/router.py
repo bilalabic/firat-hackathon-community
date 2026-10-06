@@ -6,9 +6,10 @@ from uuid import UUID
 
 from fastapi import APIRouter, Query
 
-from fhc_api.common.errors import error_responses, not_found
+from fhc_api.common.audit import ADMIN_UI
+from fhc_api.common.errors import error_responses
 from fhc_api.common.pagination import DEFAULT_LIMIT, Limit, Offset
-from fhc_api.community import repository
+from fhc_api.community import repository, service
 from fhc_api.community.models import (
     ApplicationStatus,
     ApplicationStatusUpdate,
@@ -53,9 +54,9 @@ def list_community_applications(
 def update_community_application(
     conn: DbConn, application_id: UUID, body: ApplicationStatusUpdate
 ) -> CommunityApplicationOut:
-    row = repository.set_status(conn, "community_applications", application_id, body.status)
-    if row is None:
-        raise not_found("community application")
+    row = service.set_status(
+        conn, "community_applications", application_id, body.status, actor=ADMIN_UI
+    )
     return CommunityApplicationOut.model_validate(row)
 
 
@@ -86,7 +87,5 @@ def list_team_applications(
 def update_team_application(
     conn: DbConn, application_id: UUID, body: ApplicationStatusUpdate
 ) -> TeamApplicationOut:
-    row = repository.set_status(conn, "team_applications", application_id, body.status)
-    if row is None:
-        raise not_found("team application")
+    row = service.set_status(conn, "team_applications", application_id, body.status, actor=ADMIN_UI)
     return TeamApplicationOut.model_validate(row)

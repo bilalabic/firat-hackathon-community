@@ -7,9 +7,12 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Skeleton } from "@/components/ui/skeleton"
 import { api } from "@/lib/api/client"
 import { llmCheck, telegramCheck } from "@/lib/health"
+import { formatDateTime } from "@/lib/format"
 import {
+  ADMIN_BOT_STATE_TEXT,
   LLM_STATUS_TEXT,
   TELEGRAM_STATUS_TEXT,
+  adminBotHealth,
   dbHealth,
   llmHealth,
   telegramHealth,
@@ -162,6 +165,58 @@ export async function TelegramCheck() {
             ["Unneeded rights granted", (data.excess_rights ?? []).join(", ") || "None"],
           ]}
         />
+      )}
+    </CheckCard>
+  )
+}
+
+export const ADMIN_BOT_TEXT = {
+  title: "Telegram admin bot",
+  description: "GET /admin-bot/status: review and application decisions from Telegram (separate admin bot).",
+}
+
+export async function AdminBotCheck() {
+  const result = await api.adminBotStatus()
+  if (!result.ok) {
+    return (
+      <CheckCard {...ADMIN_BOT_TEXT}>
+        <ApiErrorState error={result.error} />
+      </CheckCard>
+    )
+  }
+  const data = result.data
+  const summary = adminBotHealth(result)
+  const count = (value: number | null | undefined) => (value == null ? "—" : String(value))
+  return (
+    <CheckCard {...ADMIN_BOT_TEXT} summary={{ ...summary, label: ADMIN_BOT_STATE_TEXT[data.state] }}>
+      {data.state === "disabled" ? (
+        <p className="text-muted-foreground">
+          Set TELEGRAM_ADMIN_ENABLED=true, TELEGRAM_ADMIN_BOT_TOKEN and TELEGRAM_ADMIN_USER_IDS in
+          services/api/.env and restart the API.
+        </p>
+      ) : (
+        <>
+          {data.config_error && <p className="text-destructive">{data.config_error}</p>}
+          {data.last_error && (
+            <p className={data.state === "error" ? "text-destructive" : "text-muted-foreground"}>
+              Last error ({formatDateTime(data.last_error_at)}): {data.last_error}
+            </p>
+          )}
+          <Facts
+            items={[
+              ["Bot", data.bot_username ? `@${data.bot_username}` : "—"],
+              ["Allowed admins", String(data.allowlist_size)],
+              ["Last poll", formatDateTime(data.last_poll_at)],
+              ["Last scan", formatDateTime(data.last_scan_at)],
+              ["Awaiting decision", count(data.pending_notifications)],
+              ["Open reason prompts", count(data.pending_replies)],
+              [
+                "Button age limit",
+                data.max_press_age_hours == null ? "—" : `${data.max_press_age_hours} h`,
+              ],
+            ]}
+          />
+        </>
       )}
     </CheckCard>
   )
