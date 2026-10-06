@@ -402,3 +402,12 @@ The local admin API now runs against the cloud DB through the session pooler (ab
 - Notifications resolved as approved, published and contacted.
 - Test data (event, application, notifications, audit rows) deleted; the event was unpublished first so the site cache was revalidated.
 - Confirmed by the owner: the inline buttons disappear after a decision (`editMessageText` without `reply_markup` removes the keyboard). V1.1b is fully verified.
+
+**MVP #17 closed (2026-10-06):** Lighthouse mobile on `/hackathonlar` after removing the unused Geist Mono web font (PR #22): **Performance 96 / 96 / 96**, Accessibility 100, SEO 100, Best Practices 100 (FCP 1.0 s, LCP 2.5 s, TBT 30–40 ms).
+
+Findings from the investigation:
+- The LCP element is the static page lead paragraph, not the list.
+- Real network loads finish in about 430 ms. The 2.5 s LCP is Lighthouse's simulated slow-4G / 4× CPU estimate, where preloaded fonts and JS sit on the text LCP path.
+- Fonts on the critical path went from 4 files (~83 KiB) to 2 files (45 KiB).
+- Next.js classifies `Chrome-Lighthouse` as an HTML-limited bot (`HTML_LIMITED_BOT_UA_RE`): Lighthouse gets the fully rendered response, not the streamed PPR shell. Measured with a normal mobile UA as well: LCP was the same (2.6 s before the font change), so this did not distort the score here. It matters when reading future traces.
+- Remaining headroom, if needed later: about 170 KiB of client JS on the list page (the client-side explorer).
