@@ -9,7 +9,8 @@ token. To keep it out of errors, reprs and logs:
 - a logging filter on the `httpx2` logger (which logs every request URL at INFO) redacts
   `bot<token>` path segments.
 
-Only read methods are implemented. Sending and editing messages is V1.1.
+The read methods serve the M6 channel check; the update, send and edit methods serve the
+V1.1b admin bot (`fhc_api.admin_bot`).
 """
 
 import logging
@@ -17,12 +18,14 @@ import re
 from typing import Any, TypeVar
 
 import httpx2
-from pydantic import BaseModel, ConfigDict, ValidationError
+from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
 _TOKEN_RE = re.compile(r"[0-9]{1,20}:[A-Za-z0-9_-]{20,100}")
 _URL_TOKEN_RE = re.compile(r"/bot[0-9]{1,20}:[A-Za-z0-9_-]+")
 _MAX_DESCRIPTION = 300
 DEFAULT_TIMEOUT_S = 10.0
+# answerCallbackQuery `text`: 0-200 characters (Bot API 10.3).
+ANSWER_TEXT_MAX = 200
 
 M = TypeVar("M", bound=BaseModel)
 
@@ -67,6 +70,36 @@ class TelegramChatMember(_TelegramModel):
     can_edit_stories: bool | None = None
     can_delete_stories: bool | None = None
     can_manage_direct_messages: bool | None = None
+
+
+class TelegramMessage(_TelegramModel):
+    """Subset of `Message`. Also parses `InaccessibleMessage` (chat, message_id, date 0)."""
+
+    message_id: int
+    date: int
+    chat: TelegramChat
+    from_: TelegramUser | None = Field(default=None, alias="from")
+    text: str | None = None
+    reply_to_message: "TelegramMessage | None" = None
+
+
+class TelegramCallbackQuery(_TelegramModel):
+    id: str
+    from_: TelegramUser = Field(alias="from")
+    message: TelegramMessage | None = None
+    data: str | None = None
+
+
+class TelegramUpdate(_TelegramModel):
+    """Only the update types the admin bot asks for (`allowed_updates`)."""
+
+    update_id: int
+    message: TelegramMessage | None = None
+    callback_query: TelegramCallbackQuery | None = None
+
+
+class _UpdateList(_TelegramModel):
+    items: list[TelegramUpdate]
 
 
 class TelegramError(Exception):
@@ -153,13 +186,14 @@ class TelegramClient:
         if self._owns_client:
             self._client.close()
 
-    def _call(self, method: str, params: dict[str, Any], model: type[M]) -> M:
+    def _request(self, method: str, params: dict[str, Any], timeout_s: float | None) -> Any:
+        """POST the method; return the `result` of a successful Bot API response."""
         error: TelegramError | None = None
         try:
             response = self._client.post(
                 f"{self._base_url}/bot{self._token}/{method}",
                 json=params,
-                timeout=self._timeout_s,
+                timeout=self._timeout_s if timeout_s is None else timeout_s,
             )
         except httpx2.TimeoutException:
             error = TelegramNetworkError(f"Telegram {method} timed out.")
@@ -191,8 +225,20 @@ class TelegramClient:
                 retry_after if isinstance(retry_after, int) else None,
             )
 
+        return payload.get("result")
+
+    def _call(
+        self,
+        method: str,
+        params: dict[str, Any],
+        model: type[M],
+        *,
+        timeout_s: float | None = None,
+    ) -> M:
+        result = self._request(method, params, timeout_s)
+        error: TelegramError | None = None
         try:
-            return model.model_validate(payload.get("result"))
+            return model.model_validate(result)
         except ValidationError:
             error = TelegramResponseError(f"Telegram {method} returned an unexpected result.")
         raise error
@@ -207,3 +253,82 @@ class TelegramClient:
         return self._call(
             "getChatMember", {"chat_id": chat_id, "user_id": user_id}, TelegramChatMember
         )
+
+    # --- admin bot (V1.1b) ------------------------------------------------------------
+
+    def get_updates(
+        self, *, offset: int | None, timeout_s: int, allowed_updates: list[str]
+    ) -> list[TelegramUpdate]:
+        """Long polling. The HTTP timeout is the poll timeout plus `DEFAULT_TIMEOUT_S`."""
+        params: dict[str, Any] = {"timeout": timeout_s, "allowed_updates": allowed_updates}
+        if offset is not None:
+            params["offset"] = offset
+        result = self._request("getUpdates", params, timeout_s + DEFAULT_TIMEOUT_S)
+        error: TelegramError | None = None
+        try:
+            return _UpdateList.model_validate({"items": result}).items
+        except ValidationError:
+            error = TelegramResponseError("Telegram getUpdates returned an unexpected result.")
+        raise error
+
+    def send_message(
+        self,
+        chat_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+        reply_to_message_id: int | None = None,
+    ) -> TelegramMessage:
+        """`text` is HTML (every dynamic value escaped by the caller); no link previews."""
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+        }
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
+        if reply_to_message_id is not None:
+            params["reply_parameters"] = {
+                "message_id": reply_to_message_id,
+                "allow_sending_without_reply": True,
+            }
+        return self._call("sendMessage", params, TelegramMessage)
+
+    def edit_message_text(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        reply_markup: dict[str, Any] | None = None,
+    ) -> None:
+        """Without `reply_markup` the edited message has no inline keyboard."""
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "text": text,
+            "parse_mode": "HTML",
+            "link_preview_options": {"is_disabled": True},
+        }
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
+        self._request("editMessageText", params, None)
+
+    def edit_message_reply_markup(
+        self, chat_id: int, message_id: int, reply_markup: dict[str, Any] | None
+    ) -> None:
+        """`reply_markup=None` removes the inline keyboard."""
+        params: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
+        if reply_markup is not None:
+            params["reply_markup"] = reply_markup
+        self._request("editMessageReplyMarkup", params, None)
+
+    def answer_callback_query(self, callback_query_id: str, text: str | None = None) -> None:
+        params: dict[str, Any] = {"callback_query_id": callback_query_id}
+        if text:
+            params["text"] = text[:ANSWER_TEXT_MAX]
+        if self._request("answerCallbackQuery", params, None) is not True:
+            raise TelegramResponseError(
+                "Telegram answerCallbackQuery returned an unexpected result."
+            )

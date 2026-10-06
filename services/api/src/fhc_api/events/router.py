@@ -3,6 +3,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, BackgroundTasks, Query, status
 
+from fhc_api.common.audit import ADMIN_UI
 from fhc_api.common.errors import error_responses, not_found
 from fhc_api.common.pagination import DEFAULT_LIMIT, Limit, Offset
 from fhc_api.db import DbConn
@@ -109,6 +110,6 @@ def transition_event(
     tasks: BackgroundTasks,
     revalidator: RevalidatorDep,
 ) -> EventOut:
-    result = service.transition_event(conn, event_id, body)
+    result = service.transition_event(conn, event_id, body, actor=ADMIN_UI)
     _schedule_revalidation(result, tasks, revalidator)
     return service.to_out(result.row)

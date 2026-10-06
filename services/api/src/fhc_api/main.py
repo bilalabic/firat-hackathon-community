@@ -10,6 +10,8 @@ from pydantic import BaseModel
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 
 from fhc_api import __doc__ as description
+from fhc_api.admin_bot.bot import AdminBot
+from fhc_api.admin_bot.router import build_admin_bot_router
 from fhc_api.common.errors import error_responses, install_error_handlers
 from fhc_api.community.router import router as community_router
 from fhc_api.config import Settings
@@ -57,6 +59,7 @@ def create_app(
     url_checker: UrlChecker | None = None,
     llm_provider: LLMProvider | None = None,
     telegram_client: TelegramClient | None = None,
+    admin_bot_client: TelegramClient | None = None,
 ) -> FastAPI:
     pool = create_pool(settings.DATABASE_URL.get_secret_value())
     # Integration clients are created once per app and closed on shutdown (`closers`).
@@ -75,6 +78,10 @@ def create_app(
             invalid_telegram_token = True
         else:
             closers.append(telegram.close)
+    web_revalidator = revalidator or WebRevalidator(settings)
+    # Disabled by default; a bad configuration only disables the bot (/admin-bot/status).
+    admin_bot = AdminBot(settings, pool.connection, web_revalidator, client=admin_bot_client)
+    closers.append(admin_bot.close)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -87,6 +94,10 @@ def create_app(
         with ExitStack() as stack:
             for close in closers:
                 stack.callback(close)
+            # Registered last, so it runs first: the bot thread stops before its Telegram
+            # client and the pool are closed.
+            stack.callback(admin_bot.stop)
+            admin_bot.start()
             yield
 
     app = FastAPI(
@@ -101,7 +112,8 @@ def create_app(
     )
     app.state.settings = settings
     app.state.pool = pool
-    app.state.revalidator = revalidator or WebRevalidator(settings)
+    app.state.revalidator = web_revalidator
+    app.state.admin_bot = admin_bot
     app.state.url_checker = url_checker or check_url_reachable
 
     # Rejects DNS-rebinding requests (foreign Host header) with 400. No CORS middleware:
@@ -128,6 +140,7 @@ def create_app(
             settings.TELEGRAM_CHANNEL_ID,
             invalid_token_format=invalid_telegram_token,
         ),
+        build_admin_bot_router(lambda: admin_bot),
     ):
         protected.include_router(router)
 

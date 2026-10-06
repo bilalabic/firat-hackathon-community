@@ -2,6 +2,7 @@ from collections.abc import Sequence
 from typing import Literal
 from uuid import UUID
 
+from psycopg import sql
 from psycopg.rows import DictRow
 
 from fhc_api.common.sql import select_page, update_row
@@ -22,6 +23,17 @@ def list_page(
         limit=limit,
         offset=offset,
     )
+
+
+def get_status(
+    conn: Conn, table: ApplicationTable, row_id: UUID, *, for_update: bool = False
+) -> str | None:
+    query = sql.SQL("select status from {table} where id = %s{lock}").format(
+        table=sql.Identifier("app", table),
+        lock=sql.SQL(" for update" if for_update else ""),
+    )
+    row = conn.execute(query, (row_id,)).fetchone()
+    return None if row is None else str(row["status"])
 
 
 def set_status(conn: Conn, table: ApplicationTable, row_id: UUID, status: str) -> DictRow | None:
