@@ -8,10 +8,11 @@ Telegram calls (answers, edits, prompts) and web revalidation run afterwards, ou
 the connection, and are best effort.
 """
 
+import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any, cast
+from typing import Any, Literal, cast
 from uuid import UUID
 
 from fastapi import HTTPException
@@ -35,8 +36,19 @@ from fhc_api.telegram.client import (
 from fhc_api.telegram.formatting import escape_html
 from fhc_api.web.revalidate import event_tags
 
+# A reason reply is accepted only within this time after its prompt was sent. The reply has
+# no press-age check of its own: this TTL (plus the state token) is what bounds it.
 REASON_TTL_MINUTES = 15
 REASON_MAX_LENGTH = 1000  # EventTransition.reason
+# The Confirm press must follow the first Publish/Reject press within this time.
+CONFIRM_TTL_S = 10 * 60
+# "Not on the allowlist" is logged at warning level at most once per this interval.
+FOREIGN_LOG_INTERVAL_S = 10 * 60
+_CONFIRMS: dict[Action, str] = {"publish_confirm": "publish", "reject_confirm": "reject"}
+_CONFIRM_PROMPTS: dict[str, str] = {
+    "reject": "Confirm to reject (a reason follows).",
+    "publish": "Confirm to publish on the public site.",
+}
 
 # Button -> (event transition, notification resolution, outcome line)
 _EVENT_ACTIONS: dict[Action, tuple[EventAction, str, str]] = {
@@ -84,6 +96,21 @@ class _Effects:
 class Handlers:
     def __init__(self, ctx: BotContext) -> None:
         self._ctx = ctx
+        self._foreign_logged_at: float | None = None
+
+    def _log_foreign(self, what: str) -> None:
+        """Content-free and rate-limited: strangers cannot flood the log."""
+        now = time.monotonic()
+        if (
+            self._foreign_logged_at is None
+            or now - self._foreign_logged_at >= FOREIGN_LOG_INTERVAL_S
+        ):
+            self._foreign_logged_at = now
+            logger.warning(
+                "admin bot: ignored %s (repeats are logged at debug level for 10 min)", what
+            )
+        else:
+            logger.debug("admin bot: ignored %s", what)
 
     def handle(self, update: TelegramUpdate) -> None:
         """Database availability errors propagate (the runner retries the update later);
@@ -98,7 +125,7 @@ class Handlers:
     def _on_callback(self, query: TelegramCallbackQuery) -> None:
         user_id = query.from_.id
         if user_id not in self._ctx.config.admin_ids:
-            logger.warning("admin bot: ignored a button press from a user not on the allowlist")
+            self._log_foreign("a button press from a user not on the allowlist")
             self._answer(query.id, "Not allowed.")
             return
         message = query.message
@@ -117,7 +144,9 @@ class Handlers:
         self, conn: Conn, callback: Callback, chat_id: int, message_id: int, user_id: int
     ) -> _Effects:
         here = (chat_id, message_id)
-        note = store.find_by_message(conn, chat_id, message_id, self._ctx.config.max_press_age_h)
+        note = store.find_by_message(
+            conn, chat_id, message_id, self._ctx.config.max_press_age_h, CONFIRM_TTL_S
+        )
         if (
             note is None
             or note["message_id"] is None
@@ -130,7 +159,8 @@ class Handlers:
             # Not a button this bot put on this message; leave the message as it is.
             return _Effects(answer="Unknown button.")
         if note["resolved_at"] is not None:
-            return _Effects(answer=f"Already handled ({note['resolution']}).")
+            # Also drop the buttons, in case an earlier edit that should have done so failed.
+            return _Effects(answer=f"Already handled ({note['resolution']}).", markup=(*here, {}))
         entity = store.load_entity(conn, callback.entity_type, callback.entity_id, for_update=True)
         head = (
             messages.header(callback.entity_type, entity)
@@ -167,24 +197,32 @@ class Handlers:
         here = (note["chat_id"], note["message_id"])
         action, kind = callback.action, cast(Kind, note["kind"])
         keyboard_args = (callback.entity_type, callback.entity_id, callback.token)
-        if action == "reject":
-            return _Effects(
-                answer="Confirm to reject (a reason follows).",
-                markup=(*here, messages.keyboard("reject_confirm", *keyboard_args)),
+        original = (*here, messages.keyboard(kind, *keyboard_args))
+        if action in ("reject", "publish"):
+            # First step: recorded server-side; the Confirm press is checked against it.
+            store.set_confirm(conn, note["id"], action)
+            layout: Literal["reject_confirm", "publish_confirm"] = (
+                "reject_confirm" if action == "reject" else "publish_confirm"
             )
-        if action == "publish":
             return _Effects(
-                answer="Confirm to publish on the public site.",
-                markup=(*here, messages.keyboard("publish_confirm", *keyboard_args)),
+                answer=_CONFIRM_PROMPTS[action],
+                markup=(*here, messages.keyboard(layout, *keyboard_args)),
             )
         if action == "cancel":
-            return _Effects(
-                answer="Cancelled.", markup=(*here, messages.keyboard(kind, *keyboard_args))
-            )
+            store.set_confirm(conn, note["id"], None)
+            return _Effects(answer="Cancelled.", markup=original)
+        if action in _CONFIRMS:
+            if note["confirm_action"] != _CONFIRMS[action] or not note["confirm_fresh"]:
+                store.set_confirm(conn, note["id"], None)
+                return _Effects(
+                    answer="Press the button again: the confirmation expired or was not asked for.",
+                    markup=original,
+                )
+            store.set_confirm(conn, note["id"], None)
         if action in _REASON_ACTIONS:
             return _Effects(
                 answer="Reply to the prompt with the reason.",
-                markup=(*here, messages.keyboard(kind, *keyboard_args)),
+                markup=original,
                 prompt=_Prompt(
                     chat_id=note["chat_id"],
                     reply_to=note["message_id"],
@@ -259,7 +297,7 @@ class Handlers:
     def _on_message(self, message: TelegramMessage) -> None:
         user = message.from_
         if user is None or user.id not in self._ctx.config.admin_ids or message.chat.id != user.id:
-            logger.warning("admin bot: ignored a message from a user or chat not on the allowlist")
+            self._log_foreign("a message from a user or chat not on the allowlist")
             return
         if message.chat.type != "private":  # pragma: no cover - chat id == user id is private
             return

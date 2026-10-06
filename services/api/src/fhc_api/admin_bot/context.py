@@ -6,7 +6,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from fhc_api.admin_bot.codec import Kind, application_token, event_token
+from fhc_api.admin_bot.codec import Kind, state_token
 from fhc_api.admin_bot.settings import AdminBotConfig
 from fhc_api.db import ConnFactory
 from fhc_api.telegram.client import TelegramAPIError, TelegramClient, TelegramError
@@ -29,18 +29,16 @@ class BotContext:
     request_scan: Callable[[], None]
     # Sleep that returns True when the bot is stopping (pacing between sends).
     sleep: Callable[[float], bool]
+    # True once shutdown started: loops over Telegram calls stop early.
+    stopping: Callable[[], bool]
 
 
 def current_token(kind: Kind, status: str | None, updated_at: datetime | None) -> str | None:
     """The state token a live message of this kind must carry for the entity as it is
     now; None when no message of this kind should be live (wrong status or deleted)."""
-    if status != KIND_STATUS[kind]:
+    if status != KIND_STATUS[kind] or updated_at is None:
         return None
-    if kind == "application":
-        return application_token(status)
-    if updated_at is None:  # pragma: no cover - events always have updated_at
-        return None
-    return event_token(updated_at)
+    return state_token(updated_at)
 
 
 def best_effort(what: str, call: Callable[[], object]) -> bool:

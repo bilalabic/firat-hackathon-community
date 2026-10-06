@@ -2,9 +2,13 @@
 long polls. It never raises into the API: every failure is logged (no secrets, no
 personal data), shown by `GET /admin-bot/status`, and followed by a backoff.
 
-Shutdown: `stop()` sets an event and joins the thread. The longest blocking call is one
-long poll (`POLL_TIMEOUT_S`, HTTP timeout `POLL_TIMEOUT_S + 10 s`), so shutdown waits at
-most about that long. No database connection is held during a Telegram call.
+Shutdown: `stop()` sets an event and joins the thread for at most
+`POLL_TIMEOUT_S + DEFAULT_TIMEOUT_S + 5` = 25 s. Backoff and pacing waits end at once;
+loops over updates, sends and edits check the event between calls, so the thread stops
+after the call in progress: a long poll (HTTP timeout 20 s), another Bot API call (10 s), a
+pool checkout (10 s) or a statement (15 s statement_timeout). Usually that is well under a
+second. If the join times out, a warning is logged and the daemon thread exits on its
+own. No database connection is held during a Telegram call.
 """
 
 import threading
@@ -35,6 +39,17 @@ ALLOWED_UPDATES = ["message", "callback_query"]
 BACKOFF_BASE_S = 2.0
 BACKOFF_MAX_S = 300.0
 INVALID_TOKEN_BACKOFF_S = 600.0
+# An update that keeps failing with a connection error is skipped after this many tries.
+MAX_UPDATE_ATTEMPTS = 5
+# admin_shutdown, crash_shutdown, cannot_connect_now
+_SHUTDOWN_STATES = frozenset({"57P01", "57P02", "57P03"})
+
+
+def is_connection_error(exc: psycopg.OperationalError) -> bool:
+    """The database is unreachable (connection lost or refused, pool timeout, server
+    shutdown), as opposed to a statement-level error such as a cancelled query."""
+    sqlstate = exc.sqlstate
+    return sqlstate is None or sqlstate.startswith("08") or sqlstate in _SHUTDOWN_STATES
 
 
 def describe_error(exc: BaseException) -> str:
@@ -77,12 +92,15 @@ class AdminBotRunner:
             revalidator=revalidator,
             request_scan=self._scan_requested.set,
             sleep=self._stop.wait,
+            stopping=self._stop.is_set,
         )
         self._scan_interval_s = config.scan_interval_s
         self._outbox = Outbox(ctx)
         self._handlers = Handlers(ctx)
         self._bot_id: int | None = None
         self._offset: int | None = None
+        # Connection-error tries of the update at the head of the queue (update id -> tries).
+        self._attempts: dict[int, int] = {}
         self._next_scan = 0.0
         # Status (read by the API thread under the lock).
         self.bot_username: str | None = None
@@ -151,7 +169,13 @@ class AdminBotRunner:
 
     def poll_once(self, timeout_s: int) -> int:
         """One getUpdates call; handles and confirms each update in order. A database
-        outage stops the batch before the failing update, so it is retried later."""
+        outage stops the batch before the failing update, so it is retried later (at most
+        MAX_UPDATE_ATTEMPTS times).
+
+        The handler's transaction commits before the offset is saved. A crash in between
+        re-processes that update after a restart; that is harmless (the press finds its
+        message already resolved, a reply finds its prompt used up), except that a Request
+        changes / Reject confirm press can send a second reason prompt."""
         if self._bot_id is None:
             self.identify()
         updates = self._client.get_updates(
@@ -164,6 +188,7 @@ class AdminBotRunner:
             if self._stop.is_set():
                 break
             self._handle(update)
+            self._attempts.pop(update.update_id, None)
             self._offset = update.update_id + 1
             with self._open_conn() as conn:
                 store.save_offset(conn, self._bot_id or 0, self._offset)
@@ -173,8 +198,13 @@ class AdminBotRunner:
     def _handle(self, update: TelegramUpdate) -> None:
         try:
             self._handlers.handle(update)
-        except psycopg.OperationalError:
-            raise  # database unavailable: do not confirm the update
+        except psycopg.OperationalError as exc:
+            attempts = self._attempts.get(update.update_id, 0) + 1
+            if is_connection_error(exc) and attempts < MAX_UPDATE_ATTEMPTS:
+                # Database unreachable: do not confirm; retried after the backoff.
+                self._attempts = {update.update_id: attempts}
+                raise
+            self._record_error(exc, f"skipping update {update.update_id}")
         except (TelegramError, psycopg.Error, HTTPException, ValidationError, ValueError) as exc:
             # A bad update must not block the queue: log and move on.
             self._record_error(exc, "handling an update")

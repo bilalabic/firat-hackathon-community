@@ -1,8 +1,8 @@
 """`callback_data` for the admin bot's inline buttons.
 
 Format: `v1:<action>:<entity type>:<id, 32 hex>:<state token, 8 hex>` (at most 50 bytes;
-Bot API limit: 1-64 bytes). The state token is a short hash of the entity state the
-buttons were made for, so a press on an outdated message is detected and refused.
+Bot API limit: 1-64 bytes). The state token is a short hash of the entity's `updated_at`
+when the buttons were made, so a press on an outdated message is detected and refused.
 """
 
 import hashlib
@@ -101,16 +101,9 @@ def decode(data: str | None) -> Callback | None:
     return Callback(action, entity_type, UUID(hex=entity_hex), token)
 
 
-def _short_hash(value: str) -> str:
-    return hashlib.sha256(value.encode()).hexdigest()[:8]
-
-
-def event_token(updated_at: datetime) -> str:
-    """Changes with every write to the event (the `updated_at` trigger)."""
+def state_token(updated_at: datetime) -> str:
+    """Changes with every write to the event or application (their `updated_at` triggers),
+    so e.g. an application set back to `new` gets a new token and a new message."""
     if updated_at.tzinfo is None:
         raise ValueError("updated_at must be timezone-aware")
-    return _short_hash("event:" + updated_at.astimezone(UTC).isoformat())
-
-
-def application_token(status: str) -> str:
-    return _short_hash("application:" + status)
+    return hashlib.sha256(updated_at.astimezone(UTC).isoformat().encode()).hexdigest()[:8]

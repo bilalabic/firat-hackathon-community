@@ -28,6 +28,7 @@ DEFAULT_TIMEOUT_S = 10.0
 ANSWER_TEXT_MAX = 200
 
 M = TypeVar("M", bound=BaseModel)
+logger = logging.getLogger(__name__)
 
 
 class _TelegramModel(BaseModel):
@@ -96,10 +97,6 @@ class TelegramUpdate(_TelegramModel):
     update_id: int
     message: TelegramMessage | None = None
     callback_query: TelegramCallbackQuery | None = None
-
-
-class _UpdateList(_TelegramModel):
-    items: list[TelegramUpdate]
 
 
 class TelegramError(Exception):
@@ -264,12 +261,22 @@ class TelegramClient:
         if offset is not None:
             params["offset"] = offset
         result = self._request("getUpdates", params, timeout_s + DEFAULT_TIMEOUT_S)
-        error: TelegramError | None = None
-        try:
-            return _UpdateList.model_validate({"items": result}).items
-        except ValidationError:
-            error = TelegramResponseError("Telegram getUpdates returned an unexpected result.")
-        raise error
+        if not isinstance(result, list):
+            raise TelegramResponseError("Telegram getUpdates returned an unexpected result.")
+        updates: list[TelegramUpdate] = []
+        for item in result:
+            update_id = item.get("update_id") if isinstance(item, dict) else None
+            if not isinstance(update_id, int):
+                logger.warning("Telegram getUpdates: skipped an update without update_id")
+                continue
+            try:
+                updates.append(TelegramUpdate.model_validate(item))
+            except ValidationError:
+                # Keep only the id: the caller confirms it, so one malformed update cannot
+                # block the queue. Its content is not logged.
+                logger.warning("Telegram getUpdates: update %d has an unexpected shape", update_id)
+                updates.append(TelegramUpdate(update_id=update_id))
+        return updates
 
     def send_message(
         self,

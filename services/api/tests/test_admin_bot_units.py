@@ -73,23 +73,23 @@ def test_encode_rejects_a_bad_token() -> None:
 
 def test_state_tokens() -> None:
     at = datetime(2026, 10, 6, 12, 0, tzinfo=UTC)
-    token = codec.event_token(at)
+    token = codec.state_token(at)
     assert len(token) == 8
     # Same instant in another zone -> same token; another instant -> another token.
-    assert codec.event_token(at.astimezone(timezone(timedelta(hours=3)))) == token
-    assert codec.event_token(at + timedelta(microseconds=1)) != token
-    assert codec.application_token("new") != codec.application_token("contacted")
+    assert codec.state_token(at.astimezone(timezone(timedelta(hours=3)))) == token
+    assert codec.state_token(at + timedelta(microseconds=1)) != token
     with pytest.raises(ValueError):
-        codec.event_token(datetime(2026, 10, 6))  # naive on purpose
+        codec.state_token(datetime(2026, 10, 6))  # naive on purpose
 
 
 def test_current_token_depends_on_kind_and_status() -> None:
     at = datetime(2026, 10, 6, tzinfo=UTC)
-    assert current_token("review", "in_review", at) == codec.event_token(at)
+    assert current_token("review", "in_review", at) == codec.state_token(at)
     assert current_token("review", "approved", at) is None
-    assert current_token("publish", "approved", at) == codec.event_token(at)
+    assert current_token("publish", "approved", at) == codec.state_token(at)
     assert current_token("publish", None, None) is None
-    assert current_token("application", "new", None) == codec.application_token("new")
+    assert current_token("application", "new", at) == codec.state_token(at)
+    assert current_token("application", "new", None) is None
     assert current_token("application", "spam", None) is None
 
 

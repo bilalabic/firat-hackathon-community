@@ -126,13 +126,14 @@ See `docs/planning/DECISIONS.md` **D-21** (proposed) and `OPEN_QUESTIONS.md` Q14
 Implementation: `services/api/src/fhc_api/admin_bot/` (details in `docs/architecture/LOCAL_ADMIN.md`,
 "Telegram admin bot"). Differences from the proposal above, and facts re-checked against Bot API 10.3:
 
-- **State token:** 8 hex characters (not 4), from SHA-256 of `updated_at` (events) or `status`
-  (applications). `callback_data` is at most 50 bytes.
+- **State token:** 8 hex characters (not 4), from SHA-256 of the entity's `updated_at` (the
+  migration adds `updated_at` to the application tables). `callback_data` is at most 50 bytes.
 - **Press age:** `CallbackQuery` carries no press time, so the age is that of the bot's message
-  (`sent_at` in `app.bot_notifications`, database clock). An expired press is refused and the next
-  scan sends a fresh message with new buttons.
+  (`sent_at` in `app.bot_notifications`, database clock). An expired press is refused, and each
+  scan also retires unpressed messages past the limit; a fresh message with new buttons follows.
 - **Reject:** Reject → Confirm / Cancel → reason prompt (`force_reply`, reply within 15 min).
-  Request changes → reason prompt directly. Publish → Confirm / Cancel.
+  Request changes → reason prompt directly. Publish → Confirm / Cancel. The confirmation stage
+  is recorded server-side, so a crafted Confirm button without the first press is refused.
 - **Stale messages are retired proactively:** each scan edits messages whose entity changed elsewhere
   (admin UI, another admin) to remove their buttons.
 - **Re-checked (2026-10-06):** `getUpdates` `offset`/`timeout`/`allowed_updates` semantics;

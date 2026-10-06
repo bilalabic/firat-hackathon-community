@@ -3,7 +3,7 @@
 begin;
 create extension if not exists pgtap with schema extensions;
 
-select plan(11);
+select plan(14);
 
 select has_table('app', 'bot_state', 'app.bot_state exists');
 select has_table('app', 'bot_notifications', 'app.bot_notifications exists');
@@ -44,6 +44,18 @@ select throws_ok(
      values ('community_application', '00000000-0000-0000-0000-0000000000c1', 'review',
              '0123abcd', 1111) $$,
   '23514', null, 'kind must match the entity type'
+);
+
+select throws_ok(
+  $$ update app.bot_notifications set confirm_action = 'publish' where chat_id = 2222 $$,
+  '23514', null, 'confirm_action and confirm_at are set together'
+);
+
+-- ---------------------------------------------------------------- applications
+select has_column('app', 'community_applications', 'updated_at', 'community applications have updated_at');
+select has_trigger(
+  'app', 'team_applications', 'team_applications_set_updated_at',
+  'team applications maintain updated_at'
 );
 
 -- ---------------------------------------------------------------- audit

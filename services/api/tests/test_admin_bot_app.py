@@ -202,8 +202,16 @@ def test_end_to_end_with_the_background_thread(
             # A second press on the (now decided) review message is refused.
             fake.press(buttons(review)["✅ Approve"], message_id(review))
             fake.press(buttons(prompt)["🚀 Publish"], message_id(prompt))
-            wait_for(lambda: len(fake.bodies("editMessageReplyMarkup")) == 1)
-            confirm = fake.bodies("editMessageReplyMarkup")[0]
+
+            def confirm_keyboards() -> list[dict[str, Any]]:
+                return [
+                    body
+                    for body in fake.bodies("editMessageReplyMarkup")
+                    if body["message_id"] == message_id(prompt) and "reply_markup" in body
+                ]
+
+            wait_for(lambda: len(confirm_keyboards()) == 1)
+            confirm = confirm_keyboards()[0]
             fake.press(buttons(confirm)["🚀 Confirm publish"], message_id(prompt))
             wait_for(lambda: "🚀 Published" in fake.answers())
         finally:

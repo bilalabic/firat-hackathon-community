@@ -28,11 +28,12 @@ from fhc_api.sources import repository as sources_repository
 from fhc_api.telegram.client import TelegramAPIError, TelegramError
 from fhc_api.telegram.formatting import escape_html
 
-# Entities considered per kind and scan (oldest first), and new messages per kind and scan.
+# Per scan and per candidate list (review events, publish events, community applications,
+# team applications): entities considered (oldest first) and entities given new messages.
 # Already-notified entities are skipped before the send limit applies, so a backlog drains
 # over successive scans.
 MAX_CANDIDATES = 500
-MAX_SENDS_PER_KIND = 10
+MAX_SENDS_PER_LIST = 10
 # Telegram asks bots not to send more than about one message per second to one chat.
 SEND_PACING_S = 1.0
 # After "bot was blocked" / "can't initiate conversation" (403), stop trying that chat
@@ -72,16 +73,20 @@ class Outbox:
             with conn.transaction():
                 retired = self._retire_outdated(conn)
             outgoing = self._collect(conn)
+        sent = 0
         for edit in retired:
+            if self._ctx.stopping():
+                return sent
             best_effort(
                 "retiring an outdated message",
                 partial(
                     self._ctx.client.edit_message_text, edit.chat_id, edit.message_id, edit.text
                 ),
             )
-        sent = 0
         for item in outgoing:
             for chat_id in item.chats:
+                if self._ctx.stopping():
+                    return sent
                 if self._send(item, chat_id):
                     sent += 1
                     if self._ctx.sleep(SEND_PACING_S):
@@ -91,35 +96,42 @@ class Outbox:
     # --- retire ------------------------------------------------------------------------
 
     def _retire_outdated(self, conn: Conn) -> list[_Edit]:
-        """Resolve live messages whose entity changed since they were sent (decided in the
-        admin UI, edited, deleted) and return the edits that remove their buttons."""
+        """Resolve live messages that can no longer be used and return the edits that remove
+        their buttons: the entity changed since they were sent (decided in the admin UI,
+        edited, deleted) -> `superseded`; the buttons are older than the max press age ->
+        `expired`, and `_collect` sends a fresh message in the same scan."""
         edits: list[_Edit] = []
-        stale: list[UUID] = []
-        for row in store.unresolved_with_state(conn):
+        resolved: dict[str, list[UUID]] = {"superseded": [], "expired": []}
+        hours = f"{self._ctx.config.max_press_age_h:g}"
+        for row in store.unresolved_with_state(conn, self._ctx.config.max_press_age_h):
             kind: Kind = row["kind"]
             is_event = row["entity_type"] == "event"
             status = row["event_status"] if is_event else row["application_status"]
             token = current_token(kind, status, row["updated_at"])
-            if token == row["state_token"]:
+            if token == row["state_token"] and not row["expired"]:
                 continue
-            stale.append(row["id"])
             if status is None:
-                head, outcome = "<b>Deleted entry</b>", "It no longer exists."
+                head = "<b>Deleted entry</b>"
+            elif is_event:
+                head = messages.event_header(row)
             else:
-                head = (
-                    messages.event_header(row)
-                    if is_event
-                    else messages.application_header(row["entity_type"], row)
-                )
-                outcome = (
-                    "Changed since this message; an updated message follows."
-                    if token is not None
-                    else f"Now <i>{escape_html(status)}</i>; nothing to do here."
-                )
+                head = messages.application_header(row["entity_type"], row)
+            if token == row["state_token"]:
+                resolved["expired"].append(row["id"])
+                outcome = f"⌛ Buttons expired after {hours} h; a fresh message follows."
+            else:
+                resolved["superseded"].append(row["id"])
+                if status is None:
+                    outcome = "It no longer exists."
+                elif token is not None:
+                    outcome = "Changed since this message; an updated message follows."
+                else:
+                    outcome = f"Now <i>{escape_html(status)}</i>; nothing to do here."
             edits.append(
                 _Edit(row["chat_id"], row["message_id"], messages.outcome_text(head, outcome))
             )
-        store.resolve_ids(conn, stale, "superseded")
+        for resolution, ids in resolved.items():
+            store.resolve_ids(conn, ids, resolution)
         return edits
 
     # --- collect -----------------------------------------------------------------------
@@ -154,7 +166,7 @@ class Outbox:
             chats = tuple(chat for chat in admins if (row["id"], token, chat) not in live)
             if not chats:
                 continue
-            if len(items) == MAX_SENDS_PER_KIND:
+            if len(items) == MAX_SENDS_PER_LIST:
                 break  # the rest follow in later scans
             items.append(
                 Outgoing(

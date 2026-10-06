@@ -120,12 +120,14 @@ def delete_stale_claims(conn: Conn) -> int:
     ).rowcount
 
 
-def unresolved_with_state(conn: Conn) -> list[DictRow]:
+def unresolved_with_state(conn: Conn, max_age_h: float) -> list[DictRow]:
     """Sent, unresolved notifications with the current state of their entity (null
-    columns when the entity no longer exists)."""
+    columns when the entity no longer exists) and whether their buttons are too old."""
     return conn.execute(
         "select n.id, n.entity_type, n.entity_id, n.kind, n.state_token, n.chat_id,"
-        " n.message_id, e.title, e.status::text as event_status, e.updated_at,"
+        " n.message_id, n.sent_at < now() - make_interval(secs => %s) as expired,"
+        " e.title, e.status::text as event_status,"
+        " coalesce(e.updated_at, c.updated_at, t.updated_at) as updated_at,"
         " coalesce(c.status, t.status)::text as application_status,"
         " coalesce(c.full_name, t.full_name) as full_name"
         " from app.bot_notifications n"
@@ -136,17 +138,30 @@ def unresolved_with_state(conn: Conn) -> list[DictRow]:
         "   on n.entity_type = 'team_application' and t.id = n.entity_id"
         " where n.resolved_at is null and n.message_id is not null"
         " order by n.sent_at",
+        (max_age_h * 3600,),
     ).fetchall()
 
 
-def find_by_message(conn: Conn, chat_id: int, message_id: int, max_age_h: float) -> DictRow | None:
-    """The notification shown in this message, locked, with `expired` computed by the
-    database clock."""
+def find_by_message(
+    conn: Conn, chat_id: int, message_id: int, max_age_h: float, confirm_ttl_s: float
+) -> DictRow | None:
+    """The notification shown in this message, locked, with `expired` (button age) and
+    `confirm_fresh` (a recent first Publish/Reject press) computed by the database clock."""
     return conn.execute(
-        "select *, sent_at < now() - make_interval(secs => %s) as expired"
+        "select *, sent_at < now() - make_interval(secs => %s) as expired,"
+        " coalesce(confirm_at >= now() - make_interval(secs => %s), false) as confirm_fresh"
         " from app.bot_notifications where chat_id = %s and message_id = %s for update",
-        (max_age_h * 3600, chat_id, message_id),
+        (max_age_h * 3600, confirm_ttl_s, chat_id, message_id),
     ).fetchone()
+
+
+def set_confirm(conn: Conn, notification_id: UUID, action: str | None) -> None:
+    """Record (or clear, with None) the first step of a two-step confirmation."""
+    conn.execute(
+        "update app.bot_notifications set confirm_action = %s,"
+        " confirm_at = case when %s::text is null then null else now() end where id = %s",
+        (action, action, notification_id),
+    )
 
 
 def get_notification(conn: Conn, notification_id: UUID) -> DictRow | None:

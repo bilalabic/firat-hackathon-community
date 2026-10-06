@@ -3,6 +3,20 @@
 -- entities are referenced by id, and reasons stay in app.events.internal_notes.
 
 -- ---------------------------------------------------------------------------
+-- Applications get `updated_at` (like events), so the bot's state token changes on every
+-- status change, including new -> contacted -> new (the application is notified again).
+-- ---------------------------------------------------------------------------
+alter table app.community_applications add column updated_at timestamptz not null default now();
+alter table app.team_applications add column updated_at timestamptz not null default now();
+
+create trigger community_applications_set_updated_at
+  before update on app.community_applications
+  for each row execute function app.set_updated_at();
+create trigger team_applications_set_updated_at
+  before update on app.team_applications
+  for each row execute function app.set_updated_at();
+
+-- ---------------------------------------------------------------------------
 -- Small key/value store (e.g. the getUpdates offset per bot).
 -- ---------------------------------------------------------------------------
 create table app.bot_state (
@@ -25,8 +39,8 @@ create table app.bot_notifications (
     check (entity_type in ('event', 'community_application', 'team_application')),
   entity_id uuid not null,
   kind text not null check (kind in ('review', 'publish', 'application')),
-  -- Short hash of the entity state the buttons were made for (events: updated_at,
-  -- applications: status). A press with another token is stale.
+  -- Short hash of the entity's `updated_at` when the buttons were made. A press with
+  -- another token is stale.
   state_token text not null check (state_token ~ '^[0-9a-f]{8}$'),
   chat_id bigint not null,
   message_id bigint check (message_id > 0),
@@ -39,8 +53,14 @@ create table app.bot_notifications (
       'contacted', 'accepted', 'declined', 'spam', 'superseded', 'expired'
     )
   ),
+  -- Two-step confirmation, enforced by the server: the first Publish/Reject press records
+  -- the stage; the matching Confirm press is accepted only while it is recent.
+  confirm_action text check (confirm_action in ('publish', 'reject')),
+  confirm_at timestamptz,
   constraint bot_notifications_sent_has_message
     check ((message_id is null) = (sent_at is null)),
+  constraint bot_notifications_confirm_together
+    check ((confirm_action is null) = (confirm_at is null)),
   constraint bot_notifications_resolved_together
     check ((resolved_at is null) = (resolution is null)),
   constraint bot_notifications_kind_matches_entity

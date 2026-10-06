@@ -157,7 +157,7 @@ def test_every_admin_gets_a_message_and_one_decision_resolves_all(
 def test_a_backlog_drains_over_several_scans(
     client: TestClient, fake: FakeTelegram, runner: AdminBotRunner, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    monkeypatch.setattr(outbox, "MAX_SENDS_PER_KIND", 1)
+    monkeypatch.setattr(outbox, "MAX_SENDS_PER_LIST", 1)
     first = in_review(client, title="Pytest M3 First")
     second = in_review(client, title="Pytest M3 Second")
     ids = {UUID(first["id"]).hex, UUID(second["id"]).hex}
@@ -254,6 +254,13 @@ def test_approve_then_publish_with_confirmation(
     runner.poll_once(0)
     assert list(buttons(fake.bodies("editMessageReplyMarkup")[-1])) == ["🚀 Publish", "Later"]
 
+    # Cancel cleared the confirmation stage: an old Confirm button is refused.
+    fake.press(buttons(confirm)["🚀 Confirm publish"], prompt_id)
+    runner.poll_once(0)
+    assert get_event(client, event["id"])["status"] == "approved"
+    assert str(fake.answers()[-1]).startswith("Press the button again")
+
+    fake.press(buttons(prompt)["🚀 Publish"], prompt_id)
     fake.press(buttons(confirm)["🚀 Confirm publish"], prompt_id)
     runner.poll_once(0)
     published = get_event(client, event["id"])
@@ -380,6 +387,9 @@ def test_press_after_a_decision_elsewhere_is_outdated(
     fake.press(buttons(review)["✅ Approve"], message_id_of(fake, review))  # pressed again
     runner.poll_once(0)
     assert fake.answers()[-1] == "Already handled (superseded)."
+    removal = fake.bodies("editMessageReplyMarkup")[-1]  # the buttons go too
+    assert removal["message_id"] == message_id_of(fake, review)
+    assert "reply_markup" not in removal
 
 
 def test_scan_retires_messages_decided_in_the_admin_ui(
