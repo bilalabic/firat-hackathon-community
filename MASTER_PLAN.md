@@ -390,3 +390,15 @@ The local admin API now runs against the cloud DB through the session pooler (ab
 - apply the migration to the cloud project;
 - enable the bot;
 - real-phone E2E, including confirming that `editMessageText` without `reply_markup` removes the keyboard.
+
+**V1.1b production E2E (2026-10-06, owner's phone, cloud DB):**
+- Migration `20261006120000_admin_bot.sql` pushed to the cloud (migrations only). New tables are not reachable through the Data API (404/406); `events_public` is unchanged.
+- Admin bot enabled. `/admin-bot/status`: running, `@firathackathonadmin_bot`, allowlist 1, no errors.
+- **Event flow:** test event submitted from the admin API, then the review message arrived on the phone.
+  - **Approve**, then **Publish**, then **Confirm** were pressed in Telegram.
+  - The event was published and visible on the live site.
+  - Audit rows: `admin_ui` submit; `telegram:<owner id>` approve and publish.
+- **Application flow:** a test application through the public RPC arrived as a message with first name, type and channel only. **Contacted** set its status; the audit row is `telegram:<owner id>` `set_status`.
+- Notifications resolved as approved, published and contacted.
+- Test data (event, application, notifications, audit rows) deleted; the event was unpublished first so the site cache was revalidated.
+- Open: owner confirmation that the inline buttons disappeared after the presses (`editMessageText` without `reply_markup`).
