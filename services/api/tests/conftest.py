@@ -38,8 +38,17 @@ def make_settings(**overrides: Any) -> Settings:
         "ADMIN_API_TOKEN": TOKEN,
         **overrides,
     }
-    # model_validate skips the settings sources: no environment variables, no .env.
-    return Settings.model_validate(values)
+    # `_env_file=None` disables services/api/.env: it may hold real tokens (and, on the dev
+    # laptop, the production DSN). Note that `Settings.model_validate` would still read it.
+    # Settings-named environment variables are cleared by `_isolate_settings_env` below.
+    return Settings(_env_file=None, **values)  # type: ignore[call-arg]
+
+
+@pytest.fixture(autouse=True)
+def _isolate_settings_env(monkeypatch: pytest.MonkeyPatch) -> None:
+    """No Settings field can come from the developer's real environment."""
+    for name in Settings.model_fields:
+        monkeypatch.delenv(name, raising=False)
 
 
 class RecordingRevalidator:
