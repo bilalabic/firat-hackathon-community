@@ -4,7 +4,13 @@ from typing import Any
 
 import pytest
 
-from fhc_api.publishing.hashing import PUBLISHABLE_FIELDS, canonical_json, publishable_hash
+from fhc_api.publishing.hashing import (
+    CARD_FIELDS,
+    PUBLISHABLE_FIELDS,
+    canonical_json,
+    card_hash,
+    publishable_hash,
+)
 
 EVENT: dict[str, Any] = {
     "title": "Fırat Hackathon",
@@ -53,6 +59,22 @@ def test_hash_ignores_non_projected_fields(field: str) -> None:
     changed = {**EVENT, field: "changed"}
 
     assert publishable_hash(changed) == publishable_hash(EVENT)
+
+
+@pytest.mark.parametrize("field", CARD_FIELDS)
+def test_card_hash_changes_with_card_fields(field: str) -> None:
+    assert card_hash({**EVENT, field: "changed"}) != card_hash(EVENT)
+
+
+@pytest.mark.parametrize("field", ["summary", "team_min", "official_url", "application_url"])
+def test_caption_only_fields_change_the_content_hash_but_not_the_card(field: str) -> None:
+    changed = {**EVENT, field: "changed"}
+    assert card_hash(changed) == card_hash(EVENT)
+    assert publishable_hash(changed) != publishable_hash(EVENT)
+
+
+def test_card_fields_are_publishable() -> None:
+    assert set(CARD_FIELDS) <= set(PUBLISHABLE_FIELDS)
 
 
 def test_missing_field_hashes_like_null() -> None:

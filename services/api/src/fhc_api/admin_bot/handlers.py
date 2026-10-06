@@ -12,13 +12,13 @@ import time
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from functools import partial
-from typing import Any, Literal, cast
+from typing import Any, cast
 from uuid import UUID
 
 from fastapi import HTTPException
 
 from fhc_api.admin_bot import messages, store
-from fhc_api.admin_bot.codec import KIND_ACTIONS, Action, Callback, Kind, decode
+from fhc_api.admin_bot.codec import CHANNEL_KINDS, KIND_ACTIONS, Action, Callback, Kind, decode
 from fhc_api.admin_bot.context import BotContext, best_effort, current_token, logger
 from fhc_api.common.audit import telegram_actor
 from fhc_api.community import service as community_service
@@ -27,6 +27,7 @@ from fhc_api.community.repository import ApplicationTable
 from fhc_api.db import Conn
 from fhc_api.events import service as events_service
 from fhc_api.events.models import EventAction, EventTransition
+from fhc_api.publishing import repository as publishing_repository
 from fhc_api.telegram.client import (
     TelegramCallbackQuery,
     TelegramError,
@@ -44,10 +45,28 @@ REASON_MAX_LENGTH = 1000  # EventTransition.reason
 CONFIRM_TTL_S = 10 * 60
 # "Not on the allowlist" is logged at warning level at most once per this interval.
 FOREIGN_LOG_INTERVAL_S = 10 * 60
-_CONFIRMS: dict[Action, str] = {"publish_confirm": "publish", "reject_confirm": "reject"}
+_CONFIRMS: dict[Action, str] = {
+    "publish_confirm": "publish",
+    "reject_confirm": "reject",
+    "channel_post_confirm": "channel_post",
+    "channel_update_confirm": "channel_update",
+}
+_CONFIRM_LAYOUTS: dict[Action, messages.ConfirmLayout] = {
+    "reject": "reject_confirm",
+    "publish": "publish_confirm",
+    "channel_post": "channel_post_confirm",
+    "channel_update": "channel_update_confirm",
+}
 _CONFIRM_PROMPTS: dict[str, str] = {
     "reject": "Confirm to reject (a reason follows).",
     "publish": "Confirm to publish on the public site.",
+    "channel_post": "Confirm to post to the public channel.",
+    "channel_update": "Confirm to edit the channel post.",
+}
+# Channel offers (V1.1a): confirm button -> notification resolution.
+_CHANNEL_RESOLUTIONS: dict[Action, str] = {
+    "channel_post_confirm": "posted",
+    "channel_update_confirm": "updated",
 }
 
 # Button -> (event transition, notification resolution, outcome line)
@@ -81,6 +100,19 @@ class _Prompt:
     head: str
 
 
+@dataclass(frozen=True)
+class _ChannelJob:
+    """A confirmed channel post/update, run after the commit through the publishing service
+    (it makes its own short pool checkouts around the Bot API call)."""
+
+    action: Action  # channel_post_confirm | channel_update_confirm
+    kind: Kind
+    event_id: UUID
+    actor: str
+    head: str
+    chat_id: int
+
+
 @dataclass
 class _Effects:
     """Telegram side effects of one update, applied after the database commit."""
@@ -91,6 +123,7 @@ class _Effects:
     prompt: _Prompt | None = None
     revalidate_slug: str | None = None
     scan: bool = False
+    channel: _ChannelJob | None = None
 
 
 class Handlers:
@@ -178,12 +211,19 @@ class Handlers:
                 scan=True,
             )
         status = None if entity is None else str(entity["status"])
+        marker = ""
+        if entity is not None and note["kind"] in CHANNEL_KINDS:
+            marker = publishing_repository.channel_marker(
+                publishing_repository.live_post(conn, callback.entity_id)
+            )
         token = current_token(
-            note["kind"], status, None if entity is None else entity.get("updated_at")
+            note["kind"], status, None if entity is None else entity.get("updated_at"), marker
         )
         if token != note["state_token"]:
             store.resolve_ids(conn, [note["id"]], "superseded")
             now = f"now <i>{escape_html(status)}</i>" if status else "it no longer exists"
+            if note["kind"] in CHANNEL_KINDS and status == "published":
+                now = "the event or its channel post changed"
             return _Effects(
                 answer="Outdated: this changed since the message was sent.",
                 edits=[(*here, messages.outcome_text(head, f"Outdated: {now}."))],
@@ -198,15 +238,12 @@ class Handlers:
         action, kind = callback.action, cast(Kind, note["kind"])
         keyboard_args = (callback.entity_type, callback.entity_id, callback.token)
         original = (*here, messages.keyboard(kind, *keyboard_args))
-        if action in ("reject", "publish"):
+        if action in _CONFIRM_LAYOUTS:
             # First step: recorded server-side; the Confirm press is checked against it.
             store.set_confirm(conn, note["id"], action)
-            layout: Literal["reject_confirm", "publish_confirm"] = (
-                "reject_confirm" if action == "reject" else "publish_confirm"
-            )
             return _Effects(
                 answer=_CONFIRM_PROMPTS[action],
-                markup=(*here, messages.keyboard(layout, *keyboard_args)),
+                markup=(*here, messages.keyboard(_CONFIRM_LAYOUTS[action], *keyboard_args)),
             )
         if action == "cancel":
             store.set_confirm(conn, note["id"], None)
@@ -219,6 +256,17 @@ class Handlers:
                     markup=original,
                 )
             store.set_confirm(conn, note["id"], None)
+        if action in _CHANNEL_RESOLUTIONS:
+            return _Effects(
+                channel=_ChannelJob(
+                    action=action,
+                    kind=kind,
+                    event_id=callback.entity_id,
+                    actor=telegram_actor(user_id),
+                    head=head,
+                    chat_id=note["chat_id"],
+                )
+            )
         if action in _REASON_ACTIONS:
             return _Effects(
                 answer="Reply to the prompt with the reason.",
@@ -235,9 +283,13 @@ class Handlers:
             )
         if action == "later":
             store.resolve_ids(conn, [note["id"]], "later")
+            where = (
+                "Later: post from the admin UI (Publishing → Telegram)."
+                if kind in CHANNEL_KINDS
+                else "Later: publish from the admin UI."
+            )
             return _Effects(
-                answer="Left for later.",
-                edits=[(*here, messages.outcome_text(head, "Later: publish from the admin UI."))],
+                answer="Left for later.", edits=[(*here, messages.outcome_text(head, where))]
             )
         actor = telegram_actor(user_id)
         if action in _APPLICATION_STATUSES:
@@ -355,6 +407,14 @@ class Handlers:
         callback_query_id: str | None = None,
         reply_chat: int | None = None,
     ) -> None:
+        job = effects.channel
+        if job is not None:
+            # The Bot API call to the channel can take a while (Telegram downloads the
+            # card): answer the press now, then report the result in the chat.
+            if callback_query_id is not None:
+                self._answer(callback_query_id, "Working on it…")
+            self._apply(self._run_channel(job), reply_chat=job.chat_id)
+            return
         answer = effects.answer
         if effects.prompt is not None and not self._ask_reason(effects.prompt):
             answer = "Could not send the reason prompt; try again."
@@ -379,6 +439,35 @@ class Handlers:
             self._ctx.revalidator.revalidate(event_tags(effects.revalidate_slug))
         if effects.scan:
             self._ctx.request_scan()
+
+    def _run_channel(self, job: _ChannelJob) -> _Effects:
+        """Post or update through the same service as the admin UI (same rules: published
+        only, no duplicate post, audit). Success resolves every admin's offer; a refusal
+        leaves the offer as it is and reports why."""
+        publisher = self._ctx.channel
+        if publisher is None:
+            return _Effects(answer="Channel publishing is not configured.")
+        run = publisher.send if job.action == "channel_post_confirm" else publisher.update
+        try:
+            result = run(self._ctx.open_conn, job.event_id, actor=job.actor, expected_hash=None)
+        except HTTPException as exc:
+            # 404/409 (rules) or 502 (Telegram): nothing changed in the channel; the attempt
+            # is recorded by the service. Retire the offer if it no longer applies.
+            return _Effects(answer=f"Channel: not done. {exc.detail}", scan=True)
+        with self._ctx.open_conn() as conn, conn.transaction():
+            targets = store.resolve_entity(
+                conn, "event", job.event_id, job.kind, _CHANNEL_RESOLUTIONS[job.action]
+            )
+        label = {
+            "sent": "📣 Posted to the channel",
+            "sent_as_text": "📣 Posted to the channel as text (the card was not available)",
+            "edited": "🔄 Channel post updated",
+            "edited_caption_only": "🔄 Channel caption updated (the card was not replaced)",
+            "unchanged": "🔄 Channel post was already up to date",
+        }.get(result.outcome, result.outcome)
+        effects = self._decided(job.head, label, job.actor, targets)
+        effects.answer = None  # the edited messages show the outcome
+        return effects
 
     def _ask_reason(self, prompt: _Prompt) -> bool:
         text = messages.reason_prompt_text(prompt.action, prompt.head, REASON_TTL_MINUTES)

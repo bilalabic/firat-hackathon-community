@@ -21,6 +21,8 @@ from fhc_api.llm.ollama import OllamaProvider
 from fhc_api.llm.provider import LLMConfigError, LLMProvider, MisconfiguredProvider
 from fhc_api.llm.router import build_llm_router
 from fhc_api.overview.router import router as overview_router
+from fhc_api.publishing.router import build_channel_router
+from fhc_api.publishing.service import ChannelPublisher
 from fhc_api.review.router import router as review_router
 from fhc_api.review.signals import UrlChecker, check_url_reachable
 from fhc_api.security import require_token
@@ -80,7 +82,11 @@ def create_app(
             closers.append(telegram.close)
     web_revalidator = revalidator or WebRevalidator(settings)
     # Disabled by default; a bad configuration only disables the bot (/admin-bot/status).
-    admin_bot = AdminBot(settings, pool.connection, web_revalidator, client=admin_bot_client)
+    # Channel publishing (V1.1a) uses the channel bot; the admin bot offers it too.
+    publisher = ChannelPublisher(settings, telegram, invalid_token_format=invalid_telegram_token)
+    admin_bot = AdminBot(
+        settings, pool.connection, web_revalidator, client=admin_bot_client, channel=publisher
+    )
     closers.append(admin_bot.close)
 
     @asynccontextmanager
@@ -114,6 +120,7 @@ def create_app(
     app.state.pool = pool
     app.state.revalidator = web_revalidator
     app.state.admin_bot = admin_bot
+    app.state.publisher = publisher
     app.state.url_checker = url_checker or check_url_reachable
 
     # Rejects DNS-rebinding requests (foreign Host header) with 400. No CORS middleware:
@@ -140,6 +147,7 @@ def create_app(
             settings.TELEGRAM_CHANNEL_ID,
             invalid_token_format=invalid_telegram_token,
         ),
+        build_channel_router(lambda: publisher),
         build_admin_bot_router(lambda: admin_bot),
     ):
         protected.include_router(router)

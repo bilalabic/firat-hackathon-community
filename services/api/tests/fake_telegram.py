@@ -1,4 +1,5 @@
-"""An in-memory Bot API for admin bot tests (httpx2 MockTransport). Never calls Telegram."""
+"""An in-memory Bot API for admin bot and channel publishing tests (httpx2 MockTransport).
+Never calls Telegram."""
 
 import itertools
 import json
@@ -17,6 +18,11 @@ BOT_ID = 987654321
 ADMIN_ID = 1111
 OTHER_ADMIN_ID = 2222
 STRANGER_ID = 9999
+# The channel bot (V1.1a publishing) is a different bot with its own token.
+CHANNEL_LEAK_MARKER = "FakeChannelBotSecretForTestsOnly_456"
+CHANNEL_TOKEN = f"123456789:{CHANNEL_LEAK_MARKER}"
+CHANNEL_USERNAME = "@fhc_test_channel"
+CHANNEL_CHAT_ID = -1001234567890
 
 
 class FakeTelegram:
@@ -28,12 +34,19 @@ class FakeTelegram:
         self._message_ids = itertools.count(100)
         self._update_ids = itertools.count(5000)
         self._lock = threading.Lock()
+        # Channel posts that exist (message id -> body of the last send/edit).
+        self.channel_posts: dict[int, dict[str, Any]] = {}
 
     # --- transport -------------------------------------------------------------------
 
     def client(self) -> TelegramClient:
         transport = httpx2.MockTransport(self.handle)
         return TelegramClient(ADMIN_TOKEN, client=httpx2.Client(transport=transport))
+
+    def channel_client(self) -> TelegramClient:
+        """The channel bot (another token) against the same fake."""
+        transport = httpx2.MockTransport(self.handle)
+        return TelegramClient(CHANNEL_TOKEN, client=httpx2.Client(transport=transport))
 
     def handle(self, request: httpx2.Request) -> httpx2.Response:
         method = request.url.path.rsplit("/", 1)[-1]
@@ -54,6 +67,8 @@ class FakeTelegram:
             )
         if method == "getUpdates":
             return _ok(self._pending(body.get("offset")))
+        if _is_channel(body.get("chat_id")):
+            return self._channel(method, body)
         if method == "sendMessage":
             return _ok(self._message(body["chat_id"], next(self._message_ids), body["text"]))
         if method in ("editMessageText", "editMessageReplyMarkup"):
@@ -63,6 +78,39 @@ class FakeTelegram:
         return httpx2.Response(
             404, json={"ok": False, "error_code": 404, "description": "Not Found"}
         )
+
+    def _channel(self, method: str, body: dict[str, Any]) -> httpx2.Response:
+        """Channel posts: sendPhoto/sendMessage create one, edits need it to exist,
+        deleteMessage removes it."""
+        if method in ("sendPhoto", "sendMessage"):
+            new_id = next(self._message_ids)
+            with self._lock:
+                self.channel_posts[new_id] = {"method": method, **body}
+            return _ok(
+                {
+                    "message_id": new_id,
+                    "date": int(time.time()),
+                    "chat": {"id": CHANNEL_CHAT_ID, "type": "channel", "title": "FHC Test"},
+                }
+            )
+        message_id = int(body.get("message_id", 0))
+        with self._lock:
+            exists = message_id in self.channel_posts
+            if exists and method == "deleteMessage":
+                del self.channel_posts[message_id]
+            elif exists:
+                self.channel_posts[message_id] = {
+                    **self.channel_posts[message_id],
+                    "last_edit": method,
+                    **body,
+                }
+        if not exists:
+            verb = "delete" if method == "deleteMessage" else "edit"
+            return _fail(400, f"Bad Request: message to {verb} not found")
+        if method == "deleteMessage":
+            return _ok(True)
+        chat = {"id": CHANNEL_CHAT_ID, "type": "channel"}
+        return _ok({"message_id": message_id, "date": 1, "chat": chat})
 
     def _pending(self, offset: int | None) -> list[dict[str, Any]]:
         with self._lock:
@@ -151,6 +199,19 @@ class FakeTelegram:
 
 def _ok(result: object) -> httpx2.Response:
     return httpx2.Response(200, json={"ok": True, "result": result})
+
+
+def _fail(code: int, description: str) -> httpx2.Response:
+    return httpx2.Response(code, json={"ok": False, "error_code": code, "description": description})
+
+
+def fail(code: int, description: str) -> httpx2.Response:
+    """A scripted Bot API error for `FakeTelegram.failures[method]`."""
+    return _fail(code, description)
+
+
+def _is_channel(chat_id: object) -> bool:
+    return chat_id in (CHANNEL_USERNAME, CHANNEL_CHAT_ID)
 
 
 def buttons(body: dict[str, Any]) -> dict[str, str]:

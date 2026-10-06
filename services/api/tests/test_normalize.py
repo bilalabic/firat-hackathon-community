@@ -19,7 +19,7 @@ def test_fold_turkish(text: str, expected: str) -> None:
     ("text", "expected"),
     [
         ("Borsa İstanbul Fintech Hackathon", "borsa-istanbul-fintech-hackathon"),
-        ("Greece–Türkiye Hackathon 2026", "greece-turkiye-hackathon-2026"),  # noqa: RUF001 real legacy title
+        ("Greece–Türkiye Hackathon 2026", "greece-turkiye-hackathon-2026"),
         ("DevNetwork [API + Cloud + AI] Hackathon 2026", "devnetwork-api-cloud-ai-hackathon-2026"),
         ("!!!", "event"),
     ],

@@ -71,6 +71,46 @@ def new_applications(conn: Conn, entity_type: EntityType, limit: int) -> list[Di
     return conn.execute(query, (limit,)).fetchall()
 
 
+# --- channel offers (V1.1a) ----------------------------------------------------------
+
+# `publishing.repository.channel_marker` in SQL: "<id>:<content_version>" of the event's
+# draft or live post (at most one), '' when there is none. Expects the event as `e`.
+_MARKER_SQL = sql.SQL(
+    "coalesce((select p.id::text || ':' || p.content_version from app.publications p"
+    " where p.event_id = e.id and p.platform = 'telegram'"
+    " and p.status in ('draft', 'sent', 'edited')), '')"
+)
+
+
+def recently_published_without_post(conn: Conn, max_age_h: float, limit: int) -> list[DictRow]:
+    """Published within the max press age and not posted: "Post to channel" offers. Older
+    published events (e.g. the imported ones) are never offered automatically."""
+    return conn.execute(
+        sql.SQL(
+            "select e.*, {marker} as channel_marker from app.events e"
+            " where e.status = 'published'"
+            " and e.published_at >= now() - make_interval(secs => %s)"
+            " and {marker} = ''"
+            " order by e.published_at, e.id limit %s"
+        ).format(marker=_MARKER_SQL),
+        (max_age_h * 3600, limit),
+    ).fetchall()
+
+
+def published_with_post(conn: Conn, limit: int) -> list[DictRow]:
+    """Published events with a sent/edited post, with the post's hash and body, so the
+    caller can find the ones that changed since they were posted."""
+    return conn.execute(
+        "select e.*, p.content_hash as post_content_hash, p.body as post_body,"
+        " p.image_url as post_image_url, p.message_type as post_message_type,"
+        " p.id::text || ':' || p.content_version as channel_marker"
+        " from app.events e join app.publications p on p.event_id = e.id"
+        " and p.platform = 'telegram' and p.status in ('sent', 'edited')"
+        " where e.status = 'published' order by e.updated_at, e.id limit %s",
+        (limit,),
+    ).fetchall()
+
+
 # --- notifications -------------------------------------------------------------------
 
 
@@ -124,20 +164,23 @@ def unresolved_with_state(conn: Conn, max_age_h: float) -> list[DictRow]:
     """Sent, unresolved notifications with the current state of their entity (null
     columns when the entity no longer exists) and whether their buttons are too old."""
     return conn.execute(
-        "select n.id, n.entity_type, n.entity_id, n.kind, n.state_token, n.chat_id,"
-        " n.message_id, n.sent_at < now() - make_interval(secs => %s) as expired,"
-        " e.title, e.status::text as event_status,"
-        " coalesce(e.updated_at, c.updated_at, t.updated_at) as updated_at,"
-        " coalesce(c.status, t.status)::text as application_status,"
-        " coalesce(c.full_name, t.full_name) as full_name"
-        " from app.bot_notifications n"
-        " left join app.events e on n.entity_type = 'event' and e.id = n.entity_id"
-        " left join app.community_applications c"
-        "   on n.entity_type = 'community_application' and c.id = n.entity_id"
-        " left join app.team_applications t"
-        "   on n.entity_type = 'team_application' and t.id = n.entity_id"
-        " where n.resolved_at is null and n.message_id is not null"
-        " order by n.sent_at",
+        sql.SQL(
+            "select n.id, n.entity_type, n.entity_id, n.kind, n.state_token, n.chat_id,"
+            " n.message_id, n.sent_at < now() - make_interval(secs => %s) as expired,"
+            " e.title, e.status::text as event_status,"
+            " coalesce(e.updated_at, c.updated_at, t.updated_at) as updated_at,"
+            " coalesce(c.status, t.status)::text as application_status,"
+            " coalesce(c.full_name, t.full_name) as full_name,"
+            " {marker} as channel_marker"
+            " from app.bot_notifications n"
+            " left join app.events e on n.entity_type = 'event' and e.id = n.entity_id"
+            " left join app.community_applications c"
+            "   on n.entity_type = 'community_application' and c.id = n.entity_id"
+            " left join app.team_applications t"
+            "   on n.entity_type = 'team_application' and t.id = n.entity_id"
+            " where n.resolved_at is null and n.message_id is not null"
+            " order by n.sent_at"
+        ).format(marker=_MARKER_SQL),
         (max_age_h * 3600,),
     ).fetchall()
 

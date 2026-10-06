@@ -47,6 +47,10 @@ _BUTTON_LABELS: dict[Action, str] = {
     "publish": "🚀 Publish",
     "publish_confirm": "🚀 Confirm publish",
     "later": "Later",
+    "channel_post": "📣 Post to channel",
+    "channel_post_confirm": "📣 Confirm post",
+    "channel_update": "🔄 Update channel post",
+    "channel_update_confirm": "🔄 Confirm update",
     "cancel": "Cancel",
     "contacted": "Contacted",
     "accepted": "Accepted",
@@ -59,11 +63,19 @@ _KEYBOARD_LAYOUTS: dict[str, list[list[Action]]] = {
     "publish": [["publish", "later"]],
     "publish_confirm": [["publish_confirm", "cancel"]],
     "application": [["contacted", "accepted"], ["declined", "spam"]],
+    "channel_post": [["channel_post", "later"]],
+    "channel_post_confirm": [["channel_post_confirm", "cancel"]],
+    "channel_update": [["channel_update", "later"]],
+    "channel_update_confirm": [["channel_update_confirm", "cancel"]],
 }
+ConfirmLayout = Literal[
+    "reject_confirm", "publish_confirm", "channel_post_confirm", "channel_update_confirm"
+]
 
 HELP_TEXT = (
     "<b>FHC admin bot</b>\n"
-    "Events in review, approved events and new applications arrive here with buttons. "
+    "Events in review, approved events, new applications and (when channel publishing is "
+    "set up) channel post offers arrive here with buttons. "
     "Reject and Request changes ask for a reason: reply to the prompt message. "
     "Editing happens in the admin UI."
 )
@@ -127,6 +139,25 @@ def publish_text(event: Mapping[str, Any]) -> str:
     )
 
 
+def channel_text(event: Mapping[str, Any], kind: Kind) -> str:
+    """Offer for a published event: post it to the channel, or update the existing post."""
+    if kind == "channel_post":
+        title, question = "📣 <b>Published, not in the channel yet</b>", "Post it to the channel?"
+    else:
+        title = "🔄 <b>Changed since the channel post</b>"
+        question = "Update the channel post (caption, and the card if it changed)?"
+    return "\n".join(
+        [
+            title,
+            event_header(event),
+            *_event_lines(event),
+            "",
+            question,
+            "<i>The exact caption is shown under Publishing → Telegram in the admin UI.</i>",
+        ]
+    )
+
+
 def application_header(entity_type: EntityType, row: Mapping[str, Any]) -> str:
     label = _APPLICATION_LABELS[entity_type]
     return f"<b>{escape_html(label)}</b> · {escape_html(first_name(row['full_name']))}"
@@ -165,7 +196,7 @@ def reason_prompt_text(action: Action, head: str, ttl_minutes: int) -> str:
 
 
 def keyboard(
-    layout: Kind | Literal["reject_confirm", "publish_confirm"],
+    layout: Kind | ConfirmLayout,
     entity_type: EntityType,
     entity_id: UUID,
     token: str,

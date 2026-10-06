@@ -18,7 +18,7 @@ from typing import Any
 from uuid import UUID
 
 from fhc_api.admin_bot import messages, store
-from fhc_api.admin_bot.codec import Kind
+from fhc_api.admin_bot.codec import CHANNEL_KINDS, Kind
 from fhc_api.admin_bot.context import KIND_STATUS, BotContext, best_effort, current_token, logger
 from fhc_api.common.audit import EntityType
 from fhc_api.db import Conn
@@ -50,6 +50,18 @@ class Outgoing:
     text: str
     markup: messages.Keyboard
     chats: tuple[int, ...]
+
+
+def _post_of(row: Mapping[str, Any]) -> dict[str, Any]:
+    """The live post columns of a `store.published_with_post` row, as `post_state` reads them."""
+    return {
+        "status": "sent",
+        "stale": False,
+        "content_hash": row["post_content_hash"],
+        "body": row["post_body"],
+        "image_url": row["post_image_url"],
+        "message_type": row["post_message_type"],
+    }
 
 
 @dataclass(frozen=True)
@@ -107,7 +119,7 @@ class Outbox:
             kind: Kind = row["kind"]
             is_event = row["entity_type"] == "event"
             status = row["event_status"] if is_event else row["application_status"]
-            token = current_token(kind, status, row["updated_at"])
+            token = current_token(kind, status, row["updated_at"], row["channel_marker"])
             if token == row["state_token"] and not row["expired"]:
                 continue
             if status is None:
@@ -123,6 +135,8 @@ class Outbox:
                 resolved["superseded"].append(row["id"])
                 if status is None:
                     outcome = "It no longer exists."
+                elif kind in CHANNEL_KINDS and status == "published":
+                    outcome = "The channel post changed since this message; nothing to do here."
                 elif token is not None:
                     outcome = "Changed since this message; an updated message follows."
                 else:
@@ -145,6 +159,18 @@ class Outbox:
         for entity_type in ("community_application", "team_application"):
             rows = store.new_applications(conn, entity_type, MAX_CANDIDATES)
             items += self._missing(conn, "application", entity_type, rows)
+        channel = self._ctx.channel
+        if channel is not None:
+            fresh = store.recently_published_without_post(
+                conn, self._ctx.config.max_press_age_h, MAX_CANDIDATES
+            )
+            items += self._missing(conn, "channel_post", "event", fresh)
+            changed = [
+                row
+                for row in store.published_with_post(conn, MAX_CANDIDATES)
+                if channel.post_state(row, _post_of(row), channel.render(row)) == "changed"
+            ]
+            items += self._missing(conn, "channel_update", "event", changed)
         return items
 
     def _missing(
@@ -160,7 +186,9 @@ class Outbox:
         items: list[Outgoing] = []
         for row in rows:
             status = row["status"]
-            token = current_token(kind, status, row.get("updated_at"))
+            token = current_token(
+                kind, status, row.get("updated_at"), row.get("channel_marker") or ""
+            )
             if token is None:  # pragma: no cover - rows were selected by status
                 continue
             chats = tuple(chat for chat in admins if (row["id"], token, chat) not in live)
@@ -186,6 +214,8 @@ class Outbox:
             return messages.application_text(entity_type, row)
         if kind == "publish":
             return messages.publish_text(row)
+        if kind in CHANNEL_KINDS:
+            return messages.channel_text(row, kind)
         # Deterministic signals as on the review screen, without the network URL check.
         candidates = events_repository.find_duplicate_candidates(
             conn, row["id"], row["official_url_normalized"], row["start_date"]

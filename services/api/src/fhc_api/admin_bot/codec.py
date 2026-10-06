@@ -26,7 +26,12 @@ Action = Literal[
     "publish",
     "publish_confirm",
     "later",
-    # both event messages: back from a confirmation to the original buttons
+    # channel offers (published event, V1.1a): post it, or update the existing post
+    "channel_post",
+    "channel_post_confirm",
+    "channel_update",
+    "channel_update_confirm",
+    # event messages: back from a confirmation to the original buttons
     "cancel",
     # application message (status `new`)
     "contacted",
@@ -34,7 +39,8 @@ Action = Literal[
     "declined",
     "spam",
 ]
-Kind = Literal["review", "publish", "application"]
+Kind = Literal["review", "publish", "application", "channel_post", "channel_update"]
+CHANNEL_KINDS: frozenset[Kind] = frozenset({"channel_post", "channel_update"})
 
 _ACTION_CODES: dict[Action, str] = {
     "approve": "ap",
@@ -44,6 +50,10 @@ _ACTION_CODES: dict[Action, str] = {
     "publish": "pb",
     "publish_confirm": "pbc",
     "later": "lt",
+    "channel_post": "cp",
+    "channel_post_confirm": "cpc",
+    "channel_update": "cu",
+    "channel_update_confirm": "cuc",
     "cancel": "cx",
     "contacted": "co",
     "accepted": "ac",
@@ -63,6 +73,8 @@ KIND_ACTIONS: dict[Kind, frozenset[Action]] = {
     "review": frozenset({"approve", "request_changes", "reject", "reject_confirm", "cancel"}),
     "publish": frozenset({"publish", "publish_confirm", "later", "cancel"}),
     "application": frozenset({"contacted", "accepted", "declined", "spam"}),
+    "channel_post": frozenset({"channel_post", "channel_post_confirm", "later", "cancel"}),
+    "channel_update": frozenset({"channel_update", "channel_update_confirm", "later", "cancel"}),
 }
 
 _DATA_RE = re.compile(r"v1:([a-z]{2,3}):([a-z]):([0-9a-f]{32}):([0-9a-f]{8})")
@@ -107,3 +119,13 @@ def state_token(updated_at: datetime) -> str:
     if updated_at.tzinfo is None:
         raise ValueError("updated_at must be timezone-aware")
     return hashlib.sha256(updated_at.astimezone(UTC).isoformat().encode()).hexdigest()[:8]
+
+
+def channel_token(updated_at: datetime, marker: str) -> str:
+    """State token of a channel offer: also changes when the event's post is created,
+    edited or removed (`marker`, see `publishing.repository.channel_marker`), so an offer
+    is outdated once the post was handled elsewhere (e.g. in the admin UI)."""
+    if updated_at.tzinfo is None:
+        raise ValueError("updated_at must be timezone-aware")
+    seed = f"{updated_at.astimezone(UTC).isoformat()}|{marker}"
+    return hashlib.sha256(seed.encode()).hexdigest()[:8]
