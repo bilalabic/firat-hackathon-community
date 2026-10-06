@@ -309,3 +309,24 @@ Note: a repo-local git identity (`user.name`, `user.email`, taken from earlier c
 - no delete for events or sources (test data had to be removed via SQL).
 
 **M7 note:** the web build prerenders from the database, so Vercel builds need `SUPABASE_URL` and `SUPABASE_PUBLISHABLE_KEY` set and the DB reachable at build time.
+
+### M7 Cloud setup (2026-10-06): in progress
+
+**Supabase**
+- Free quota: the owner paused `akran-degerlendirme` to make room (the limit is 2 active free projects per user, across organizations).
+- Project `firat-hackathon-community` (ref `idqnftpaekwokfehvfqz`), org "Bilal", region eu-central-1, Free. Created with the CLI; the DB password exists only in a local file for the owner's password manager.
+- `db push`: both migrations applied, no seed.
+- Config push was limited to `api.schemas = ["api"]`, `api.extra_search_path`, and `auth.enable_signup = false`. A diff confirmed nothing else changed; the full local config would have weakened cloud auth settings.
+- `admin_backend` can log in (random password, stored only in the gitignored `services/api/.env.cloud`). **The session pooler accepts the custom role**, which was the open runbook risk.
+- Legacy seed applied once: 6 published events, 6 event sources.
+- `pg_default_acl` matches local for `app`/`api`; anon has no usage on `app` and can execute exactly 3 `api` functions.
+- MVP #6 verified on the cloud: `events_public` 200 (6 rows); private table 404; `app` and `public` profiles 406; **no apikey → 401**; invalid keep-alive source → generic 400.
+
+**Vercel**
+- Project `firat-hackathon-community` (team bilalabic's projects, Hobby), Git-linked, Root Directory `apps/web`, framework nextjs, function region fra1 (same region as the DB).
+- Env vars:
+  - `SUPABASE_URL`, `SUPABASE_PUBLISHABLE_KEY` (production + preview);
+  - `WEB_REVALIDATE_SECRET`, `CRON_SECRET` (production, sensitive, entered via stdin and never printed).
+- `NEXT_PUBLIC_SITE_URL` falls back to `VERCEL_PROJECT_PRODUCTION_URL`.
+- The CLI upload failed (the CLI does not use `.gitignore`), so deploys come from Git.
+- `vercel link` appended `.vercel` and `.env*` to the root `.gitignore`. Reverted, because `.env*` would re-ignore `.env.example` files.
