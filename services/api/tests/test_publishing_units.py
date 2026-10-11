@@ -10,7 +10,7 @@ import pytest
 
 from fhc_api.admin_bot import codec, messages
 from fhc_api.admin_bot.context import current_token
-from fhc_api.publishing.service import describe_error, is_photo_error
+from fhc_api.publishing.service import describe_error, is_ambiguous, is_photo_error
 from fhc_api.telegram.client import (
     MEDIA_TIMEOUT_S,
     TelegramAPIError,
@@ -107,6 +107,9 @@ def api_error(code: int, description: str, retry_after: int | None = None) -> Te
         ("Bad Request: chat not found", False),
         ("Bad Request: can't parse entities: unexpected end tag", False),
         ("Bad Request: message is too long", False),
+        # A missing right is not a card problem: a text post would be refused the same way.
+        ("Bad Request: not enough rights to send photos to the chat", False),
+        ("Bad Request: need administrator rights in the channel chat", False),
     ],
 )
 def test_photo_errors(description: str, expected: bool) -> None:
@@ -116,6 +119,22 @@ def test_photo_errors(description: str, expected: bool) -> None:
 def test_only_400_counts_as_a_photo_error() -> None:
     assert not is_photo_error(api_error(403, "Forbidden: photo"))
     assert not is_photo_error(TelegramNetworkError("Telegram sendPhoto timed out."))
+
+
+def test_ambiguous_errors() -> None:
+    """The message may exist (uncertain) unless Telegram clearly refused (4xx)."""
+    assert is_ambiguous(TelegramNetworkError("Telegram sendPhoto timed out."))
+    assert is_ambiguous(TelegramResponseError("Telegram sendPhoto returned an unexpected result."))
+    assert is_ambiguous(api_error(500, "Internal Server Error"))
+    assert is_ambiguous(TelegramAPIError("sendPhoto", None, "", None))
+    assert not is_ambiguous(api_error(400, "Bad Request: chat not found"))
+    assert not is_ambiguous(api_error(403, "Forbidden: bot was kicked"))
+    assert not is_ambiguous(api_error(429, "Too Many Requests", 3))
+    unreadable = TelegramResponseError("Telegram sendPhoto returned a non-JSON response.")
+    assert "may have been published" in describe_error(unreadable, sending=True)
+    assert "may have been published" not in describe_error(
+        api_error(403, "Forbidden"), sending=True
+    )
 
 
 def test_describe_error() -> None:

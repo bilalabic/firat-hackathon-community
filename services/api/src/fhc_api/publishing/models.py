@@ -11,7 +11,7 @@ from fhc_api.events.models import EventStatus
 
 PublicationStatus = Literal["draft", "sent", "edited", "deleted", "failed"]
 MessageType = Literal["photo", "text"]
-PostState = Literal["not_posted", "sending", "posted", "changed", "not_public"]
+PostState = Literal["not_posted", "sending", "uncertain", "posted", "changed", "not_public"]
 
 
 class PublicationOut(BaseModel):
@@ -29,6 +29,11 @@ class PublicationOut(BaseModel):
     image_url: str | None = Field(description="Exact card URL sent; null for a text post")
     message_type: MessageType | None
     status: PublicationStatus
+    uncertain: bool = Field(
+        description="A failed send whose outcome is unknown (timeout, unreadable answer, "
+        "Telegram server error, interrupted send): "
+        "the message may exist in the channel; blocks a new send until resolved"
+    )
     sent_at: datetime | None
     edited_at: datetime | None
     deleted_at: datetime | None
@@ -51,15 +56,18 @@ class ChannelPreview(BaseModel):
     detail_url: str | None
     content_hash: str
     post_state: PostState = Field(
-        description="not_posted; sending (a send is in progress); posted; changed (the "
-        "caption or card differs from the live post); not_public (posted, but the event is "
-        "no longer published: delete the post if needed)"
+        description="not_posted; sending (a send is in progress); uncertain (a send timed "
+        "out, got an unreadable answer or was interrupted: the message may exist in the "
+        "channel; check it, then resolve the post before sending again); posted; changed "
+        "(the caption or card differs from the live post); not_public (posted, but the "
+        "event is no longer published: delete the post if needed)"
     )
     card_changed: bool = Field(description="The live post shows an outdated card")
-    current_post: PublicationOut | None = Field(description="The draft or live post")
+    current_post: PublicationOut | None = Field(description="The draft, uncertain or live post")
     can_send: bool
     can_update: bool
     can_delete: bool
+    can_resolve: bool = Field(description="post_state is uncertain (see the resolve endpoint)")
 
 
 class ChannelPostSummary(BaseModel):
@@ -88,6 +96,17 @@ class ChannelDeleteIn(BaseModel):
     publication_id: UUID = Field(description="The post shown in the preview")
 
 
+ResolveOutcome = Literal["not_in_channel"]
+
+
+class ChannelResolveIn(BaseModel):
+    outcome: ResolveOutcome = Field(
+        description="not_in_channel: the operator checked the channel and the message is not "
+        "there (or was deleted there by hand); the post is marked failed and a new send is "
+        "allowed"
+    )
+
+
 ActionOutcome = Literal[
     "sent",
     "sent_as_text",
@@ -96,14 +115,19 @@ ActionOutcome = Literal[
     "unchanged",
     "deleted",
     "already_gone",
+    "not_in_channel",
 ]
+# `detail.outcome` of the audit entries: the action outcomes plus the ones that end in an
+# error response.
+AuditOutcome = ActionOutcome | Literal["failed", "uncertain", "interrupted", "conflict"]
 
 
 class ChannelActionOut(BaseModel):
     outcome: ActionOutcome = Field(
         description="sent_as_text: the card could not be fetched, a text post with a link "
         "preview was sent; edited_caption_only: the new card could not be fetched, only the "
-        "caption changed; already_gone: the message no longer existed in the channel"
+        "caption changed; already_gone: the message no longer existed in the channel; "
+        "not_in_channel: an uncertain post was resolved as not in the channel"
     )
     message: str
     publication: PublicationOut

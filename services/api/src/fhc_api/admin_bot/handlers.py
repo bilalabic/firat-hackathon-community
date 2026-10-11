@@ -451,8 +451,10 @@ class Handlers:
         try:
             result = run(self._ctx.open_conn, job.event_id, actor=job.actor, expected_hash=None)
         except HTTPException as exc:
-            # 404/409 (rules) or 502 (Telegram): nothing changed in the channel; the attempt
-            # is recorded by the service. Retire the offer if it no longer applies.
+            # 404/409 (rules) or 502 (Telegram refused, or did not answer: then the post is
+            # uncertain and the detail says to check the channel). The attempt is recorded by
+            # the service; the scan retires the offer if it no longer applies (an uncertain
+            # post changes the channel marker, so it is not offered again).
             return _Effects(answer=f"Channel: not done. {exc.detail}", scan=True)
         with self._ctx.open_conn() as conn, conn.transaction():
             targets = store.resolve_entity(

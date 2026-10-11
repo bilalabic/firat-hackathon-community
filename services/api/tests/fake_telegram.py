@@ -5,6 +5,7 @@ import itertools
 import json
 import threading
 import time
+from collections.abc import Callable
 from typing import Any
 
 import httpx2
@@ -30,6 +31,10 @@ class FakeTelegram:
         self.calls: list[tuple[str, dict[str, Any]]] = []
         self.updates: list[dict[str, Any]] = []
         self.failures: dict[str, httpx2.Response] = {}
+        # Called with the request body before the method is answered; may raise (e.g.
+        # httpx2.ReadTimeout for a request that never gets an answer) or change the database
+        # between the two transactions of a channel operation.
+        self.hooks: dict[str, Callable[[dict[str, Any]], None]] = {}
         self.long_poll_s = long_poll_s
         self._message_ids = itertools.count(100)
         self._update_ids = itertools.count(5000)
@@ -54,6 +59,9 @@ class FakeTelegram:
         with self._lock:
             self.calls.append((method, body))
             failure = self.failures.get(method)
+            hook = self.hooks.get(method)
+        if hook is not None:
+            hook(body)
         if failure is not None:
             return failure
         if method == "getMe":

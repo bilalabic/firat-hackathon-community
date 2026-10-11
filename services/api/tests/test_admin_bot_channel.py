@@ -7,6 +7,7 @@ from contextlib import contextmanager, nullcontext
 from typing import Any
 from uuid import UUID
 
+import httpx2
 import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
@@ -254,6 +255,66 @@ def test_failed_post_keeps_the_offer_and_reports_why(
     assert sorted(row["status"] for row in channel_rows(db, event["id"])) == ["failed", "sent"]
     assert len(channel_fake.channel_posts) == 1
     assert ("channel_post", "posted") in notes(db, event["id"])
+
+
+def test_uncertain_post_is_not_offered_again(
+    client: TestClient,
+    db: Conn,
+    admin_fake: FakeTelegram,
+    channel_fake: FakeTelegram,
+    runner: AdminBotRunner,
+    publisher: ChannelPublisher,
+) -> None:
+    event = publish(client)
+    runner.scan()
+    [offer] = offers(admin_fake, event["id"])
+
+    def timeout(body: dict[str, Any]) -> None:
+        raise httpx2.ReadTimeout("timed out")
+
+    channel_fake.hooks["sendPhoto"] = timeout
+    confirm(admin_fake, runner, offer, "📣 Post to channel", "📣 Confirm post")
+    report = admin_fake.bodies("sendMessage")[-1]
+    assert "may have been published" in report["text"]
+    row = db.execute(
+        "select status, uncertain from app.publications where event_id = %s", (event["id"],)
+    ).fetchone()
+    assert row == {"status": "failed", "uncertain": True}
+
+    # The API and the bot agree: no "Post to channel" while the message may exist.
+    channel_fake.hooks.clear()
+    state = publisher.preview(db, UUID(event["id"]))
+    assert (state.post_state, state.can_send) == ("uncertain", False)
+    runner.scan()
+    runner.scan()
+    assert ("channel_post", "superseded") in notes(db, event["id"])
+    assert len(offers(admin_fake, event["id"])) == 1  # the first one, retired
+    admin_fake.press(buttons(offer)["📣 Post to channel"], message_id_of(admin_fake, offer))
+    runner.poll_once(0)
+    assert len(channel_fake.bodies("sendPhoto")) == 1
+
+
+def test_interrupted_send_is_not_offered(
+    client: TestClient,
+    db: Conn,
+    admin_fake: FakeTelegram,
+    runner: AdminBotRunner,
+    publisher: ChannelPublisher,
+) -> None:
+    """A draft left by a crash: the API reports it uncertain and the bot does not offer
+    "Post to channel" (both read the same post)."""
+    event = publish(client)
+    db.execute(
+        "insert into app.publications"
+        " (event_id, platform, target, content_hash, body, status, created_at)"
+        " values (%s, 'telegram', '@x', repeat('a', 64), 'b', 'draft',"
+        " now() - interval '11 minutes')",
+        (event["id"],),
+    )
+    state = publisher.preview(db, UUID(event["id"]))
+    assert (state.post_state, state.can_send) == ("uncertain", False)
+    runner.scan()
+    assert offers(admin_fake, event["id"]) == []
 
 
 def test_later_resolves_the_offer(

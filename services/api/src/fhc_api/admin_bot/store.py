@@ -74,11 +74,14 @@ def new_applications(conn: Conn, entity_type: EntityType, limit: int) -> list[Di
 # --- channel offers (V1.1a) ----------------------------------------------------------
 
 # `publishing.repository.channel_marker` in SQL: "<id>:<content_version>" of the event's
-# draft or live post (at most one), '' when there is none. Expects the event as `e`.
+# draft, uncertain or live post (at most one, the rows of `publishing.repository.live_post`),
+# '' when there is none. Expects the event as `e`. A stale draft or an uncertain post (the
+# message may be in the channel) is not '', so "Post to channel" is not offered for it,
+# and the API's post_state (`uncertain`) refuses a send the same way.
 _MARKER_SQL = sql.SQL(
     "coalesce((select p.id::text || ':' || p.content_version from app.publications p"
     " where p.event_id = e.id and p.platform = 'telegram'"
-    " and p.status in ('draft', 'sent', 'edited')), '')"
+    " and (p.status in ('draft', 'sent', 'edited') or p.uncertain)), '')"
 )
 
 
@@ -99,14 +102,15 @@ def recently_published_without_post(conn: Conn, max_age_h: float, limit: int) ->
 
 def published_with_post(conn: Conn, limit: int) -> list[DictRow]:
     """Published events with a sent/edited post, with the post's hash and body, so the
-    caller can find the ones that changed since they were posted."""
+    caller can find the ones that changed since they were posted. Most recently edited
+    first, so a long list of old posts never hides a fresh edit behind the limit."""
     return conn.execute(
         "select e.*, p.content_hash as post_content_hash, p.body as post_body,"
         " p.image_url as post_image_url, p.message_type as post_message_type,"
         " p.id::text || ':' || p.content_version as channel_marker"
         " from app.events e join app.publications p on p.event_id = e.id"
         " and p.platform = 'telegram' and p.status in ('sent', 'edited')"
-        " where e.status = 'published' order by e.updated_at, e.id limit %s",
+        " where e.status = 'published' order by e.updated_at desc, e.id limit %s",
         (limit,),
     ).fetchall()
 

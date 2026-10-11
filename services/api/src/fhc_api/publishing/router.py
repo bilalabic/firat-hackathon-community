@@ -1,5 +1,5 @@
-"""`/telegram/channel/...`: preview, send, update, delete and history of channel posts.
-No authentication here; the application adds it globally. Writes take short pool
+"""`/telegram/channel/...`: preview, send, update, delete, resolve and history of channel
+posts. No authentication here; the application adds it globally. Writes take short pool
 checkouts (`ConnFactoryDep`), so no connection is held during a Bot API call."""
 
 from collections.abc import Callable
@@ -18,6 +18,7 @@ from fhc_api.publishing.models import (
     ChannelHistory,
     ChannelPostPage,
     ChannelPreview,
+    ChannelResolveIn,
     ChannelSendIn,
 )
 from fhc_api.publishing.service import ChannelPublisher
@@ -95,5 +96,24 @@ def build_channel_router(get_publisher: Callable[[], ChannelPublisher]) -> APIRo
         """Also for events that are no longer public. Telegram may refuse posts older than
         48 hours (TELEGRAM_RESEARCH T-1): 502 with instructions, the post stays live."""
         return publisher.delete(open_conn, event_id, body.publication_id, actor=ADMIN_UI)
+
+    @router.post(
+        "/events/{event_id}/posts/{publication_id}/resolve",
+        operation_id="resolve_channel_post",
+        response_model=ChannelActionOut,
+        responses=error_responses(404, 409, 422),
+    )
+    def resolve_channel_post(
+        open_conn: ConnFactoryDep,
+        publisher: Publisher,
+        event_id: UUID,
+        publication_id: UUID,
+        body: ChannelResolveIn,
+    ) -> ChannelActionOut:
+        """For a post in post_state `uncertain` (a send timed out, got an unreadable answer
+        or was interrupted): the operator checked the channel and the message is not there
+        (or deleted it there by hand). Marks the post failed, so a new send is allowed;
+        audited. 409 for any other post. No Bot API call."""
+        return publisher.resolve(open_conn, event_id, publication_id, body.outcome, actor=ADMIN_UI)
 
     return router

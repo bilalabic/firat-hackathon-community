@@ -9,15 +9,17 @@ import logging
 from collections.abc import Iterator
 from contextlib import contextmanager
 from typing import Any
+from uuid import UUID
 
 import httpx2
 import pytest
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException
 from fastapi.testclient import TestClient
 
-from fhc_api.db import Conn, get_conn, get_conn_factory
+from fhc_api.db import Conn, ConnFactory, get_conn, get_conn_factory
 from fhc_api.main import create_app
 from fhc_api.publishing.hashing import card_hash
+from fhc_api.publishing.service import ChannelPublisher
 from tests.conftest import AUTH, BASE_URL, FakeUrlChecker, RecordingRevalidator, make_settings
 from tests.factories import create_event, force_status
 from tests.fake_telegram import (
@@ -113,10 +115,30 @@ def audit(db: Conn, event_id: str) -> list[tuple[str, str, str]]:
 
 def publications(db: Conn, event_id: str) -> list[dict[str, Any]]:
     return db.execute(
-        "select status, content_version, message_type, external_id, target, image_url, error"
+        "select status, uncertain, content_version, message_type, external_id, target,"
+        " image_url, error"
         " from app.publications where event_id = %s order by created_at, id",
         (event_id,),
     ).fetchall()
+
+
+def insert_draft(db: Conn, event_id: str) -> str:
+    row = db.execute(
+        "insert into app.publications (event_id, platform, target, content_hash, body, status)"
+        " values (%s, 'telegram', '@x', repeat('a', 64), 'b', 'draft') returning id",
+        (event_id,),
+    ).fetchone()
+    assert row is not None
+    return str(row["id"])
+
+
+def age_drafts(db: Conn, event_id: str) -> None:
+    """Older than STALE_DRAFT_MINUTES: left by a crash."""
+    db.execute(
+        "update app.publications set created_at = now() - interval '11 minutes'"
+        " where event_id = %s and status = 'draft'",
+        (event_id,),
+    )
 
 
 # --- end to end ------------------------------------------------------------------------
@@ -234,8 +256,9 @@ def test_publish_preview_send_edit_update_unpublish_delete(
         ("admin_ui", "telegram_post", "sent"),
         ("admin_ui", "telegram_update", "edited"),
         ("admin_ui", "telegram_update", "edited"),
+        ("admin_ui", "telegram_update", "unchanged"),
     ]
-    assert len(history["actions"]) == 4
+    assert len(history["actions"]) == 5
 
     # Published again: a new post is allowed after the deleted one.
     api.post(f"/events/{event_id}/transitions", json={"action": "publish"})
@@ -266,30 +289,141 @@ def test_send_refuses_a_stale_preview(api: TestClient, fake: FakeTelegram) -> No
     assert fake.calls == []
 
 
-def test_a_fresh_draft_blocks_and_a_stale_one_is_retired(
+def test_a_fresh_draft_blocks_and_a_stale_one_is_uncertain(
     api: TestClient, db: Conn, fake: FakeTelegram
 ) -> None:
     event = published(api)
-    db.execute(
-        "insert into app.publications (event_id, platform, target, content_hash, body, status)"
-        " values (%s, 'telegram', '@x', repeat('a', 64), 'b', 'draft')",
-        (event["id"],),
-    )
+    insert_draft(db, event["id"])
     assert preview(api, event["id"])["post_state"] == "sending"
     response = send(api, event["id"])
     assert response.status_code == 409
     assert "being sent" in response.json()["detail"]
 
-    db.execute(
-        "update app.publications set created_at = now() - interval '11 minutes'"
-        " where event_id = %s",
-        (event["id"],),
+    # Left by a crash: the message may exist, so it is not sent again.
+    age_drafts(db, event["id"])
+    state = preview(api, event["id"])
+    assert state["post_state"] == "uncertain"
+    assert (state["can_send"], state["can_resolve"]) == (False, True)
+    response = send(api, event["id"])
+    assert response.status_code == 409
+    assert "may have reached the channel" in response.json()["detail"]
+    assert fake.calls == []
+    [row] = publications(db, event["id"])
+    assert (row["status"], row["uncertain"]) == ("failed", True)
+    assert "interrupted" in row["error"]
+    assert audit(db, event["id"]) == [("admin_ui", "telegram_post", "interrupted")]
+    assert preview(api, event["id"])["post_state"] == "uncertain"
+    assert send(api, event["id"]).status_code == 409
+
+
+def _timeout(body: dict[str, Any]) -> None:
+    raise httpx2.ReadTimeout("timed out")
+
+
+@pytest.mark.parametrize("failure", ["timeout", "non_json", "unexpected_result", "server_error"])
+def test_ambiguous_send_failures_are_uncertain(
+    api: TestClient, db: Conn, fake: FakeTelegram, failure: str
+) -> None:
+    event = published(api)
+    if failure == "timeout":
+        fake.hooks["sendPhoto"] = _timeout
+    elif failure == "non_json":
+        fake.failures["sendPhoto"] = httpx2.Response(502, text="Bad Gateway")
+    elif failure == "unexpected_result":
+        fake.failures["sendPhoto"] = httpx2.Response(200, json={"ok": True, "result": {"x": 1}})
+    else:
+        fake.failures["sendPhoto"] = fail(500, "Internal Server Error")
+    result = send(api, event["id"])
+    assert result.status_code == 502
+    assert "may have been published" in result.json()["detail"]
+    assert fake.bodies("sendMessage") == []  # no text fallback either
+    [row] = publications(db, event["id"])
+    assert (row["status"], row["uncertain"]) == ("failed", True)
+    assert audit(db, event["id"]) == [("admin_ui", "telegram_post", "uncertain")]
+
+    state = preview(api, event["id"])
+    assert state["post_state"] == "uncertain"
+    assert (state["can_send"], state["can_update"], state["can_delete"]) == (False, False, False)
+    assert state["can_resolve"] is True
+    assert state["current_post"]["uncertain"] is True
+    listed = api.get("/telegram/channel/posts", params={"limit": 200}).json()["items"]
+    assert {item["event_id"]: item["post_state"] for item in listed}[event["id"]] == "uncertain"
+
+    # Telegram answers again: still no second post until the operator resolves it.
+    fake.hooks.clear()
+    fake.failures.clear()
+    response = send(api, event["id"])
+    assert response.status_code == 409
+    assert "resolve the post" in response.json()["detail"]
+    assert len(fake.bodies("sendPhoto")) == 1
+
+
+def resolve(api: TestClient, event_id: str, publication_id: str, **body: Any) -> Any:
+    return api.post(
+        f"/telegram/channel/events/{event_id}/posts/{publication_id}/resolve",
+        json={"outcome": "not_in_channel", **body},
     )
-    assert preview(api, event["id"])["post_state"] == "not_posted"
+
+
+def test_resolve_an_uncertain_post(api: TestClient, db: Conn, fake: FakeTelegram) -> None:
+    event = published(api)
+    fake.hooks["sendPhoto"] = _timeout
+    assert send(api, event["id"]).status_code == 502
+    fake.hooks.clear()
+    post = preview(api, event["id"])["current_post"]
+
+    other = published(api, title="Pytest M3 Other")
+    assert resolve(api, other["id"], post["id"]).status_code == 404
+    assert resolve(api, event["id"], "00000000-0000-4000-8000-000000000000").status_code == 404
+    assert resolve(api, event["id"], post["id"], outcome="in_channel").status_code == 422
+
+    response = resolve(api, event["id"], post["id"])
+    assert response.status_code == 200, response.text
+    body = response.json()
+    assert body["outcome"] == "not_in_channel"
+    resolved = body["publication"]
+    assert (resolved["status"], resolved["uncertain"]) == ("failed", False)
+    assert "may have been published" in resolved["error"]
+    assert resolved["error"].endswith("Checked by the operator: not in the channel.")
+    state = preview(api, event["id"])
+    assert state["post_state"] == "not_posted"
+    assert (state["can_send"], state["can_resolve"]) == (True, False)
+    assert fake.bodies("deleteMessage") == []  # no Bot API call
+
+    # Only an uncertain post can be resolved.
+    assert resolve(api, event["id"], post["id"]).status_code == 409
+    sent = send(api, event["id"])
+    assert sent.status_code == 200
+    response = resolve(api, event["id"], sent.json()["publication"]["id"])
+    assert response.status_code == 409
+    assert "status sent" in response.json()["detail"]
+
+    assert audit(db, event["id"]) == [
+        ("admin_ui", "telegram_post", "sent"),
+        ("admin_ui", "telegram_post", "uncertain"),
+        ("admin_ui", "telegram_resolve", "not_in_channel"),
+    ]
+    actions = api.get(f"/telegram/channel/events/{event['id']}/history").json()["actions"]
+    assert "telegram_resolve" in [action["action"] for action in actions]
+
+
+def test_resolve_an_interrupted_send(api: TestClient, db: Conn, fake: FakeTelegram) -> None:
+    event = published(api)
+    draft = insert_draft(db, event["id"])
+    response = resolve(api, event["id"], draft)
+    assert response.status_code == 409  # a fresh draft: the send may still be running
+    assert "status draft" in response.json()["detail"]
+
+    age_drafts(db, event["id"])
+    response = resolve(api, event["id"], draft)
+    assert response.status_code == 200, response.text
+    assert response.json()["publication"]["uncertain"] is False
+    assert audit(db, event["id"]) == [
+        ("admin_ui", "telegram_post", "interrupted"),
+        ("admin_ui", "telegram_resolve", "not_in_channel"),
+    ]
     assert send(api, event["id"]).status_code == 200
-    rows = publications(db, event["id"])
-    assert [row["status"] for row in rows] == ["failed", "sent"]
-    assert "interrupted" in rows[0]["error"]
+    assert len(fake.bodies("sendPhoto")) == 1
 
 
 def test_card_fetch_failure_falls_back_to_a_text_post(
@@ -479,6 +613,124 @@ def test_token_never_appears_in_responses_or_logs(
     assert CHANNEL_TOKEN not in caplog.text
 
 
+# --- concurrent operations (simulated between the two transactions) --------------------
+
+
+def direct_publisher(db: Conn, fake: FakeTelegram) -> tuple[ChannelPublisher, ConnFactory]:
+    """A second caller (e.g. the admin bot) on the same database and fake Bot API."""
+
+    @contextmanager
+    def open_conn() -> Iterator[Conn]:
+        with db.transaction():
+            yield db
+
+    return ChannelPublisher(make_settings(**CHANNEL_ENV), fake.channel_client()), open_conn
+
+
+def test_update_while_the_post_is_deleted(api: TestClient, db: Conn, fake: FakeTelegram) -> None:
+    event = published(api)
+    post = send(api, event["id"]).json()["publication"]
+    api.patch(f"/events/{event['id']}", json={"summary": "Güncel özet."})
+
+    def deleted_meanwhile(body: dict[str, Any]) -> None:
+        # What delete() records, committed while the edit is in flight.
+        db.execute(
+            "update app.publications set status = 'deleted', deleted_at = now(),"
+            " updating_since = null where id = %s",
+            (post["id"],),
+        )
+
+    fake.hooks["editMessageCaption"] = deleted_meanwhile
+    response = update(api, event["id"])
+    assert response.status_code == 409
+    assert "changed while it was being updated" in response.json()["detail"]
+    [row] = publications(db, event["id"])
+    assert (row["status"], row["content_version"]) == ("deleted", 1)  # not resurrected
+    assert ("admin_ui", "telegram_update", "conflict") in audit(db, event["id"])
+
+
+def test_update_after_another_update_took_over(
+    api: TestClient, db: Conn, fake: FakeTelegram
+) -> None:
+    event = published(api)
+    post = send(api, event["id"]).json()["publication"]
+    api.patch(f"/events/{event['id']}", json={"summary": "Güncel özet."})
+
+    def edited_meanwhile(body: dict[str, Any]) -> None:
+        db.execute(
+            "update app.publications set status = 'edited', edited_at = now(),"
+            " content_version = 2, updating_since = null where id = %s",
+            (post["id"],),
+        )
+
+    fake.hooks["editMessageCaption"] = edited_meanwhile
+    response = update(api, event["id"])
+    assert response.status_code == 409
+    [row] = publications(db, event["id"])
+    assert (row["status"], row["content_version"]) == ("edited", 2)  # the other result stays
+    assert ("admin_ui", "telegram_update", "conflict") in audit(db, event["id"])
+
+
+def test_a_second_update_is_refused_while_one_is_in_flight(
+    api: TestClient, db: Conn, fake: FakeTelegram
+) -> None:
+    event = published(api)
+    send(api, event["id"])
+    api.patch(f"/events/{event['id']}", json={"summary": "Güncel özet."})
+    publisher, open_conn = direct_publisher(db, fake)
+    refusals: list[HTTPException] = []
+
+    def second_update(body: dict[str, Any]) -> None:
+        del fake.hooks["editMessageCaption"]
+        try:
+            publisher.update(open_conn, UUID(event["id"]), actor="admin_ui", expected_hash=None)
+        except HTTPException as exc:
+            refusals.append(exc)
+
+    fake.hooks["editMessageCaption"] = second_update
+    response = update(api, event["id"])
+    assert response.status_code == 200, response.text
+    assert response.json()["publication"]["content_version"] == 2
+    [refusal] = refusals
+    assert refusal.status_code == 409
+    assert "being updated" in str(refusal.detail)
+    assert len(fake.bodies("editMessageCaption")) == 1  # the message was edited once
+    row = db.execute(
+        "select updating_since from app.publications where event_id = %s", (event["id"],)
+    ).fetchone()
+    assert row is not None and row["updating_since"] is None  # claim released
+
+
+def test_a_stale_update_claim_does_not_block(api: TestClient, db: Conn, fake: FakeTelegram) -> None:
+    event = published(api)
+    send(api, event["id"])
+    api.patch(f"/events/{event['id']}", json={"summary": "Güncel özet."})
+    db.execute(
+        "update app.publications set updating_since = now() - interval '11 minutes'"
+        " where event_id = %s",
+        (event["id"],),
+    )
+    assert update(api, event["id"]).status_code == 200
+
+
+def test_delete_while_the_post_is_deleted_elsewhere(
+    api: TestClient, db: Conn, fake: FakeTelegram
+) -> None:
+    event = published(api)
+    post = send(api, event["id"]).json()["publication"]
+
+    def deleted_meanwhile(body: dict[str, Any]) -> None:
+        db.execute(
+            "update app.publications set status = 'deleted', deleted_at = now() where id = %s",
+            (post["id"],),
+        )
+
+    fake.hooks["deleteMessage"] = deleted_meanwhile
+    response = delete(api, event["id"], post["id"])
+    assert response.status_code == 409
+    assert ("admin_ui", "telegram_delete", "conflict") in audit(db, event["id"])
+
+
 # --- configuration ---------------------------------------------------------------------
 
 
@@ -533,6 +785,7 @@ def test_openapi_operation_ids(api: TestClient) -> None:
         "send_channel_post",
         "update_channel_post",
         "delete_channel_post",
+        "resolve_channel_post",
     } <= ids
     assert "502" in paths["/telegram/channel/events/{event_id}/send"]["post"]["responses"]
 

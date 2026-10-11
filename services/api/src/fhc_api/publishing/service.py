@@ -10,12 +10,19 @@ Used by the admin API (`publishing/router.py`) and the admin bot ("Post to chann
   sent as a text message with a link preview of the detail page; the row records it
   (`message_type = 'text'`, the reason in `error`).
 - Only `published` events are posted (the card exists only for published events). One
-  draft or live post per event: the event row is locked while the post is claimed, and a
-  unique index backs it up. A post is claimed as `draft` *before* the Bot API call and
-  becomes `sent` or `failed` afterwards; no database connection is held during the call.
+  draft, uncertain or live post per event: the event row is locked while the post is
+  claimed, and a unique index backs it up. A post is claimed as `draft` *before* the Bot
+  API call and becomes `sent` or `failed` afterwards; no database connection is held
+  during the call.
+- A send whose outcome is unknown (timeout, unreadable answer, Telegram server error, or a
+  draft left by a crash) may have posted the message: it is `failed` with `uncertain` set
+  and blocks a new send until an operator has checked the channel and resolved it.
+- An update is claimed (`updating_since`) before the Bot API call, so two concurrent
+  updates cannot both edit the message; the result is saved only if the post is still the
+  one that was edited.
 - Unpublishing or archiving never deletes a post automatically: the preview reports
   `not_public` and offers Delete.
-- Every operation writes one `app.admin_actions` row (outcome only, no text).
+- Every write is audited in `app.admin_actions` (outcome only, no text).
 
 Error texts come from `TelegramError` messages (never the token) or are fixed sentences.
 """
@@ -39,6 +46,7 @@ from fhc_api.publishing.hashing import card_hash, publishable_hash
 from fhc_api.publishing.models import (
     ActionOutcome,
     AuditEntry,
+    AuditOutcome,
     ChannelActionOut,
     ChannelHistory,
     ChannelPostPage,
@@ -46,19 +54,23 @@ from fhc_api.publishing.models import (
     ChannelPreview,
     PostState,
     PublicationOut,
+    ResolveOutcome,
 )
 from fhc_api.telegram.client import (
     TelegramAPIError,
     TelegramClient,
     TelegramError,
     TelegramMessage,
-    TelegramNetworkError,
 )
 
 CARD_VERSION_LENGTH = 16
 INTERRUPTED = (
     "Sending was interrupted (the API stopped, or the result could not be saved). "
-    "The message may exist in the channel: check it before sending again."
+    "The message may exist in the channel: check it, then resolve this post."
+)
+UNCERTAIN = (
+    "the last send may have reached the channel (its outcome is unknown): check the channel, "
+    "delete the message there if it exists, then resolve the post as not in the channel"
 )
 CHANGED_SINCE_PREVIEW = (
     "the event changed since the preview; check the new preview and confirm again"
@@ -68,6 +80,9 @@ CHANGED_SINCE_PREVIEW = (
 # ("wrong file identifier/HTTP URL specified", "failed to get HTTP URL content", "wrong type
 # of the web page content", "PHOTO_INVALID_DIMENSIONS", "IMAGE_PROCESS_FAILED").
 _PHOTO_ERROR_HINTS = ("url", "file", "photo", "image", "web page content", "dimensions")
+# ... but never a missing right ("not enough rights to send photos to the chat"): a text
+# post would be refused the same way, and describe_error explains it.
+_RIGHTS_HINTS = ("rights", "not enough", "administrator")
 
 
 @dataclass(frozen=True)
@@ -84,7 +99,18 @@ def is_photo_error(exc: TelegramError) -> bool:
     description = exc.description.lower()
     if "chat not found" in description or "parse entities" in description:
         return False
+    if any(hint in description for hint in _RIGHTS_HINTS):
+        return False
     return any(hint in description for hint in _PHOTO_ERROR_HINTS)
+
+
+def is_ambiguous(exc: TelegramError) -> bool:
+    """The request may have been carried out anyway: no answer (timeout, lost connection),
+    an answer that cannot be read, or a Telegram server error. Only a clear refusal (4xx)
+    means that nothing was posted."""
+    if isinstance(exc, TelegramAPIError):
+        return exc.error_code is None or not 400 <= exc.error_code < 500
+    return True
 
 
 def _not_found_in_channel(exc: TelegramError) -> bool:
@@ -104,6 +130,16 @@ def _not_modified(exc: TelegramError) -> bool:
 def describe_error(exc: TelegramError, *, sending: bool = False) -> str:
     """An operator-facing sentence. Telegram's own text is kept where it helps; it never
     contains the token (TelegramClient redacts and never chains HTTP objects)."""
+    text = _describe(exc)
+    if sending and is_ambiguous(exc):
+        return (
+            f"{text} The post may have been published anyway: check the channel, then "
+            "resolve the post before sending again."
+        )
+    return text
+
+
+def _describe(exc: TelegramError) -> str:
     if isinstance(exc, TelegramAPIError):
         code, description = exc.error_code, exc.description
         low = description.lower()
@@ -126,11 +162,6 @@ def describe_error(exc: TelegramError, *, sending: bool = False) -> str:
                 "hand, then press Delete again to mark it deleted here."
             )
         return f"Telegram refused the request ({code}: {description})."
-    if isinstance(exc, TelegramNetworkError) and sending:
-        return (
-            f"{exc} The post may have been published anyway: check the channel before "
-            "sending again."
-        )
     return str(exc)
 
 
@@ -144,6 +175,15 @@ def _chat(target: str) -> int | str:
 
 def _out(row: Mapping[str, Any] | None) -> PublicationOut | None:
     return None if row is None else PublicationOut.model_validate(dict(row))
+
+
+def _blocked(post: Mapping[str, Any]) -> str:
+    """Why no new post can be sent while this draft, uncertain or live post exists."""
+    if post["uncertain"] or post["stale"]:
+        return UNCERTAIN
+    if post["status"] == "draft":
+        return "a post for this event is being sent"
+    return "the event is already posted; update or delete that post"
 
 
 class ChannelPublisher:
@@ -209,8 +249,12 @@ class ChannelPublisher:
     def post_state(
         self, event: Mapping[str, Any], post: Mapping[str, Any] | None, rendered: Rendered
     ) -> PostState:
-        if post is None or post["stale"]:
+        """Shared with the admin bot, which offers "Post to channel" only for not_posted
+        (its channel marker is non-empty for the same posts as `repository.live_post`)."""
+        if post is None:
             return "not_posted"
+        if post["uncertain"] or post["stale"]:
+            return "uncertain"
         if post["status"] == "draft":
             return "sending"
         if event["status"] != "published":
@@ -257,6 +301,7 @@ class ChannelPublisher:
             can_send=self.configured and published and state == "not_posted",
             can_update=self.configured and published and state == "changed",
             can_delete=self._client is not None and live,
+            can_resolve=state == "uncertain",
         )
 
     def list_posts(self, conn: Conn, *, limit: int, offset: int) -> ChannelPostPage:
@@ -317,6 +362,29 @@ class ChannelPublisher:
             raise conflict(CHANGED_SINCE_PREVIEW)
         return event, rendered
 
+    @staticmethod
+    def _audit(
+        conn: Conn,
+        *,
+        actor: str,
+        action: str,
+        event_id: UUID,
+        post: Mapping[str, Any],
+        outcome: AuditOutcome,
+    ) -> None:
+        audit.record(
+            conn,
+            actor=actor,
+            action=action,
+            entity_type="event",
+            entity_id=event_id,
+            detail={
+                "publication_id": str(post["id"]),
+                "content_version": post["content_version"],
+                "outcome": outcome,
+            },
+        )
+
     def _record(
         self,
         conn: Conn,
@@ -326,62 +394,68 @@ class ChannelPublisher:
         post_id: UUID,
         event_id: UUID,
         values: dict[str, Any],
-        outcome: str,
+        outcome: AuditOutcome,
     ) -> DictRow:
         row = repository.update(conn, post_id, values)
-        audit.record(
+        self._audit(conn, actor=actor, action=action, event_id=event_id, post=row, outcome=outcome)
+        return row
+
+    def _retire_stale(self, conn: Conn, post: Mapping[str, Any], *, actor: str) -> DictRow:
+        """A stale draft: the send was interrupted and its outcome is unknown."""
+        return self._record(
             conn,
             actor=actor,
-            action=action,
-            entity_type="event",
-            entity_id=event_id,
-            detail={
-                "publication_id": str(post_id),
-                "content_version": row["content_version"],
-                "outcome": outcome,
-            },
+            action="telegram_post",
+            post_id=post["id"],
+            event_id=post["event_id"],
+            values={"status": "failed", "uncertain": True, "error": INTERRUPTED},
+            outcome="interrupted",
         )
-        return row
 
     def send(
         self, open_conn: ConnFactory, event_id: UUID, *, actor: str, expected_hash: str | None
     ) -> ChannelActionOut:
         client = self._require_client()
+        claim: DictRow | None = None
         with open_conn() as conn, conn.transaction():
             _, rendered = self._lock_publishable(conn, event_id, expected_hash, "post")
             post = repository.live_post(conn, event_id, for_update=True)
-            if post is not None:
-                if not post["stale"]:
-                    raise conflict(
-                        "a post for this event is being sent"
-                        if post["status"] == "draft"
-                        else "the event is already posted; update or delete that post"
-                    )
-                repository.update(conn, post["id"], {"status": "failed", "error": INTERRUPTED})
-            claim = repository.insert(
-                conn,
-                {
-                    "event_id": event_id,
-                    "target": self._channel,
-                    "content_hash": rendered.content_hash,
-                    "body": rendered.caption.html,
-                    "image_url": rendered.image_url,
-                    "status": "draft",
-                },
-            )
+            if post is None:
+                claim = repository.insert(
+                    conn,
+                    {
+                        "event_id": event_id,
+                        "target": self._channel,
+                        "content_hash": rendered.content_hash,
+                        "body": rendered.caption.html,
+                        "image_url": rendered.image_url,
+                        "status": "draft",
+                    },
+                )
+            elif post["stale"]:
+                self._retire_stale(conn, post, actor=actor)  # committed, then refused below
+            else:
+                raise conflict(_blocked(post))
+        if claim is None:
+            raise conflict(UNCERTAIN)
 
         message, message_type, note, error = self._post(client, rendered)
 
         with open_conn() as conn, conn.transaction():
             if error is not None:
+                uncertain = is_ambiguous(error)
                 row = self._record(
                     conn,
                     actor=actor,
                     action="telegram_post",
                     post_id=claim["id"],
                     event_id=event_id,
-                    values={"status": "failed", "error": describe_error(error, sending=True)},
-                    outcome="failed",
+                    values={
+                        "status": "failed",
+                        "uncertain": uncertain,
+                        "error": describe_error(error, sending=True),
+                    },
+                    outcome="uncertain" if uncertain else "failed",
                 )
             else:
                 assert message is not None  # noqa: S101 - set whenever error is None
@@ -445,22 +519,35 @@ class ChannelPublisher:
     def update(
         self, open_conn: ConnFactory, event_id: UUID, *, actor: str, expected_hash: str | None
     ) -> ChannelActionOut:
+        """The update is claimed in the first transaction (`updating_since`), so a second
+        update is refused instead of editing the message concurrently (Telegram could apply
+        the older edit last). The second transaction saves the result only if the post is
+        still the live post that was claimed (not deleted, no other version since)."""
         client = self._require_client()
         with open_conn() as conn, conn.transaction():
             _, rendered = self._lock_publishable(conn, event_id, expected_hash, "update the post")
             post = repository.live_post(conn, event_id, for_update=True)
-            if post is None or post["stale"] or post["status"] == "draft":
+            if post is None or post["status"] not in ("sent", "edited"):
                 raise conflict(
-                    "a post for this event is being sent"
-                    if post is not None and not post["stale"]
-                    else "the event is not posted; send it first"
+                    "the event is not posted; send it first" if post is None else _blocked(post)
                 )
+            if post["updating"]:
+                raise conflict("the post is being updated; reload the page in a moment")
             if self.post_state({"status": "published"}, post, rendered) == "posted":
+                self._audit(
+                    conn,
+                    actor=actor,
+                    action="telegram_update",
+                    event_id=event_id,
+                    post=post,
+                    outcome="unchanged",
+                )
                 return ChannelActionOut(
                     outcome="unchanged",
                     message="The post is already up to date.",
                     publication=PublicationOut.model_validate(dict(post)),
                 )
+            claim = repository.claim_update(conn, post["id"])
 
         outcome, message_type, image_url, note, error = self._edit(client, post, rendered)
         gone = error is not None and _not_found_in_channel(error)
@@ -468,7 +555,22 @@ class ChannelPublisher:
         with open_conn() as conn, conn.transaction():
             current = repository.get(conn, post["id"], for_update=True)
             assert current is not None  # noqa: S101 - publications are never deleted
-            if gone:
+            lost = (
+                current["status"] not in ("sent", "edited")
+                or current["content_version"] != post["content_version"]
+                or current["updating_since"] != claim["updating_since"]
+            )
+            if lost:
+                # Deleted, or edited by another update, meanwhile: keep what is recorded.
+                self._audit(
+                    conn,
+                    actor=actor,
+                    action="telegram_update",
+                    event_id=event_id,
+                    post=current,
+                    outcome="conflict",
+                )
+            elif gone:
                 row = self._record(
                     conn,
                     actor=actor,
@@ -478,6 +580,7 @@ class ChannelPublisher:
                     values={
                         "status": "deleted",
                         "deleted_at": self._now(),
+                        "updating_since": None,
                         "error": "The message no longer exists in the channel.",
                     },
                     outcome="already_gone",
@@ -489,7 +592,7 @@ class ChannelPublisher:
                     action="telegram_update",
                     post_id=post["id"],
                     event_id=event_id,
-                    values={"error": describe_error(error)},
+                    values={"updating_since": None, "error": describe_error(error)},
                     outcome="failed",
                 )
             else:
@@ -502,6 +605,7 @@ class ChannelPublisher:
                     values={
                         "status": "edited",
                         "edited_at": self._now(),
+                        "updating_since": None,
                         "content_version": current["content_version"] + 1,
                         "content_hash": rendered.content_hash,
                         "body": rendered.caption.html,
@@ -511,6 +615,11 @@ class ChannelPublisher:
                     },
                     outcome=outcome,
                 )
+        if lost:
+            raise conflict(
+                "the post changed while it was being updated (deleted or updated meanwhile); "
+                "reload the page and check the channel"
+            )
         if error is not None:
             if gone:
                 raise conflict(
@@ -583,26 +692,43 @@ class ChannelPublisher:
 
         with open_conn() as conn, conn.transaction():
             current = repository.get(conn, publication_id, for_update=True)
-            if current is None or current["status"] not in ("sent", "edited"):
-                raise conflict("the post changed while it was being deleted; reload the page")
-            if error is not None:
-                values: dict[str, Any] = {"error": describe_error(error)}
-            else:
-                note = (
-                    "The message no longer existed in the channel."
-                    if outcome == "already_gone"
-                    else None
+            assert current is not None  # noqa: S101 - publications are never deleted
+            lost = current["status"] not in ("sent", "edited")
+            if lost:
+                self._audit(
+                    conn,
+                    actor=actor,
+                    action="telegram_delete",
+                    event_id=event_id,
+                    post=current,
+                    outcome="conflict",
                 )
-                values = {"status": "deleted", "deleted_at": self._now(), "error": note}
-            row = self._record(
-                conn,
-                actor=actor,
-                action="telegram_delete",
-                post_id=publication_id,
-                event_id=event_id,
-                values=values,
-                outcome="failed" if error is not None else outcome,
-            )
+            else:
+                if error is not None:
+                    values: dict[str, Any] = {"error": describe_error(error)}
+                else:
+                    note = (
+                        "The message no longer existed in the channel."
+                        if outcome == "already_gone"
+                        else None
+                    )
+                    values = {
+                        "status": "deleted",
+                        "deleted_at": self._now(),
+                        "updating_since": None,  # an update in flight finds it deleted
+                        "error": note,
+                    }
+                row = self._record(
+                    conn,
+                    actor=actor,
+                    action="telegram_delete",
+                    post_id=publication_id,
+                    event_id=event_id,
+                    values=values,
+                    outcome="failed" if error is not None else outcome,
+                )
+        if lost:
+            raise conflict("the post changed while it was being deleted; reload the page")
         if error is not None:
             raise bad_gateway(row["error"])
         text = (
@@ -612,4 +738,46 @@ class ChannelPublisher:
         )
         return ChannelActionOut(
             outcome=outcome, message=text, publication=PublicationOut.model_validate(dict(row))
+        )
+
+    def resolve(
+        self,
+        open_conn: ConnFactory,
+        event_id: UUID,
+        publication_id: UUID,
+        outcome: ResolveOutcome,
+        *,
+        actor: str,
+    ) -> ChannelActionOut:
+        """An uncertain post (or an interrupted send) that the operator has checked: the
+        message is not in the channel. It is marked failed (no longer uncertain), so a new
+        send is allowed. No Bot API call; allowed whatever the event status."""
+        with open_conn() as conn, conn.transaction():
+            post: Mapping[str, Any] | None = repository.get(conn, publication_id, for_update=True)
+            if post is None or post["event_id"] != event_id:
+                raise not_found("post")
+            if post["stale"]:
+                post = self._retire_stale(conn, post, actor=actor)
+            if not post["uncertain"]:
+                raise conflict(
+                    f"cannot resolve a post in status {post['status']}: only a post whose "
+                    "send outcome is unknown (post_state uncertain) can be resolved"
+                )
+            checked = "Checked by the operator: not in the channel."
+            row = self._record(
+                conn,
+                actor=actor,
+                action="telegram_resolve",
+                post_id=publication_id,
+                event_id=event_id,
+                values={
+                    "uncertain": False,
+                    "error": f"{post['error']} {checked}" if post["error"] else checked,
+                },
+                outcome=outcome,
+            )
+        return ChannelActionOut(
+            outcome=outcome,
+            message="Marked as not in the channel; the event can be posted again.",
+            publication=PublicationOut.model_validate(dict(row)),
         )

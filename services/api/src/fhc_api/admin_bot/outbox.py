@@ -57,6 +57,7 @@ def _post_of(row: Mapping[str, Any]) -> dict[str, Any]:
     return {
         "status": "sent",
         "stale": False,
+        "uncertain": False,
         "content_hash": row["post_content_hash"],
         "body": row["post_body"],
         "image_url": row["post_image_url"],
