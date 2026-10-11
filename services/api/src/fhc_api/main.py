@@ -17,7 +17,9 @@ from fhc_api.community.router import router as community_router
 from fhc_api.config import Settings
 from fhc_api.db import create_pool
 from fhc_api.events.router import router as events_router
+from fhc_api.importing.extraction import LLMExtractor
 from fhc_api.importing.models import Extractor, PageLoader
+from fhc_api.importing.page import HtmlPageLoader
 from fhc_api.importing.router import build_import_router
 from fhc_api.importing.service import UrlImporter
 from fhc_api.llm.ollama import OllamaProvider
@@ -67,6 +69,7 @@ def create_app(
     admin_bot_client: TelegramClient | None = None,
     page_loader: PageLoader | None = None,
     extractor: Extractor | None = None,
+    url_import: bool = False,
 ) -> FastAPI:
     pool = create_pool(settings.DATABASE_URL.get_secret_value())
     # Integration clients are created once per app and closed on shutdown (`closers`).
@@ -93,8 +96,13 @@ def create_app(
         settings, pool.connection, web_revalidator, client=admin_bot_client, channel=publisher
     )
     closers.append(admin_bot.close)
-    # URL import (V1.2). Without a page loader and an extractor the import endpoint answers
-    # 409 `URL import is not available`; the evidence and run reads still work.
+    # URL import (V1.2). `url_import=True` (the real app) builds the HTML page loader and the
+    # LLM extractor; tests inject fakes or leave both unset. Without a page loader and an
+    # extractor the import endpoint answers 409 `URL import is not available`; the
+    # evidence and run reads still work.
+    if url_import:
+        page_loader = page_loader or HtmlPageLoader()
+        extractor = extractor or LLMExtractor(llm, model_label=settings.OLLAMA_MODEL)
     importer = UrlImporter(page_loader, extractor)
 
     @asynccontextmanager
@@ -172,4 +180,4 @@ def create_app(
 
 def create_app_from_env() -> FastAPI:
     # Required values come from the environment or services/api/.env, not from kwargs.
-    return create_app(Settings())  # type: ignore[call-arg]
+    return create_app(Settings(), url_import=True)  # type: ignore[call-arg]

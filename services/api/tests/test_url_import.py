@@ -518,3 +518,13 @@ def test_matches_current() -> None:
     assert matches_current("country", "tr", event) is True
     assert matches_current("start_date", "2026-01-03", event) is False
     assert matches_current("city", None, event) is None
+
+
+def test_the_real_app_wires_the_html_loader_and_the_llm_extractor() -> None:
+    from fhc_api.importing.extraction import LLMExtractor
+    from fhc_api.importing.page import HtmlPageLoader
+
+    app = create_app(make_settings(), revalidator=RecordingRevalidator(), url_import=True)
+    importer = app.state.importer
+    assert isinstance(importer._loader, HtmlPageLoader)
+    assert isinstance(importer._extractor, LLMExtractor)
