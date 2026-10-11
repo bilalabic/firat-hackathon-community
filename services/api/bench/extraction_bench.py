@@ -131,7 +131,9 @@ def _saved_fetcher(pages: dict[str, bytes]) -> SafeFetcher:
     """A SafeFetcher that serves the saved HTML, so the real loader runs unchanged."""
 
     def handler(request: httpx2.Request) -> httpx2.Response:
-        body = pages.get(str(request.url))
+        # SafeFetcher connects to the pinned IP; the original host is in the Host header.
+        url = request.url.copy_with(netloc=request.headers["host"].encode("ascii"))
+        body = pages.get(str(url))
         if body is None:
             return httpx2.Response(404)
         return httpx2.Response(200, content=body, headers={"content-type": "text/html"})
@@ -148,9 +150,9 @@ def make_pipeline(model: str, pages: dict[str, bytes], loader_kind: str) -> Pipe
         loader: LoaderLike = BuiltinLoader(pages)
     else:
         page_module = importlib.import_module("fhc_api.importing.page")
-        loader = page_module.HtmlPageLoader(_saved_fetcher(pages))  # WIRING 1 (adjust to page.py)
+        loader = page_module.HtmlPageLoader(_saved_fetcher(pages))
     extraction_module = importlib.import_module("fhc_api.importing.extraction")
-    extractor: ExtractorLike = extraction_module.LLMExtractor(provider)  # WIRING 2 (extraction.py)
+    extractor: ExtractorLike = extraction_module.LLMExtractor(provider, model_label=model)
     return Pipeline(loader, extractor, provider.close)
 
 
