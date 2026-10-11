@@ -15,8 +15,10 @@ Extract facts about one event (a hackathon, ideathon, game jam or similar) from 
 in the user message. Return one JSON object with every key of the schema. Each key holds
 {"value": ..., "snippet": ...}:
 - value: the fact, or null when the page does not state it. Never guess or invent.
-- snippet: a short exact quote from the page text (copy the characters as they are, at most
-  300 characters) that states the fact; null when value is null.
+- snippet: required for every non-null value. A short verbatim quote of the page text that
+  states the fact: copy the characters exactly as they are, from one line or sentence, at
+  least two words, at most 150 characters. null only when value is null. A value without
+  a quote that states it is discarded.
 
 Fields:
 - title: the event name, copied from the page.

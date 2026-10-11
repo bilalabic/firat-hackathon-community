@@ -37,6 +37,9 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen3.5:0.8b"
     # The first call after a model load can take ~50 s on the dev laptop.
     OLLAMA_TIMEOUT_S: float = Field(default=120.0, gt=0)
+    # Context window per call (`options.num_ctx`). Ollama defaults to 4096 tokens and silently
+    # truncates longer prompts; URL import sends up to 24 000 characters of page text.
+    OLLAMA_NUM_CTX: int = Field(default=16384, ge=2048, le=262144)
 
     # Telegram (D-12). The check reports `not_configured` while either is unset.
     TELEGRAM_BOT_TOKEN: SecretStr | None = None

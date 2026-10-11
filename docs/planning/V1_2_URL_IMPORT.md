@@ -47,3 +47,13 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
 - Duplicate check in V1.2 is the exact normalized URL only; fuzzy dedup is V1.3.
 - No image download (og:image is only stored as a suggestion in `stats`, not as `poster_url`).
 - No Playwright in V1.2. A JS-only page gives a clear "no readable content" error.
+
+## Known limits (part B, deferred)
+
+- Country and currency codes are checked by pattern (`^[A-Z]{2}$`, `^[A-Z]{3}$`) and a small
+  name/symbol map, not against the full ISO 3166 / ISO 4217 lists.
+- A snippet may come from `page.title` as well as the main text (the model sees both).
+- Numeric dates are read as day-month-year (`10.12.2026`) or ISO; US month/day order is not
+  recognized.
+- The extraction schema sent to Ollama uses `$defs`/`$ref`; not inlined, not yet checked with
+  every candidate model.

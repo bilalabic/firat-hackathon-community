@@ -179,6 +179,7 @@ WEB_BASE_URL=https://<public-site>
 WEB_REVALIDATE_SECRET=...
 OLLAMA_BASE_URL=http://127.0.0.1:11434
 OLLAMA_MODEL=qwen3.5:0.8b        # default; placeholder until the V1.2 benchmark
+OLLAMA_NUM_CTX=16384             # context window per call; Ollama's default (4096) truncates pages
 TELEGRAM_BOT_TOKEN=              # optional in V1
 TELEGRAM_CHANNEL_ID=             # optional in V1
 TELEGRAM_ADMIN_ENABLED=false     # V1.1b admin bot; default false
