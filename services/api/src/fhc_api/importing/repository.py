@@ -14,12 +14,29 @@ MANUAL_SOURCE = "Manual entry"
 
 
 def find_event_by_url(conn: Conn, urls_normalized: Sequence[str]) -> DictRow | None:
-    """The oldest event whose normalized official URL is one of `urls_normalized`."""
+    """The oldest event whose normalized official URL, or one of whose event source URLs
+    (an import stores the page it read there, e.g. a redirect target), is one of
+    `urls_normalized`."""
     return conn.execute(
-        "select id, slug, title, status from app.events"
-        " where official_url_normalized = any(%s) order by created_at, id limit 1",
-        (list(urls_normalized),),
+        "select id, slug, title, status from app.events e"
+        " where e.official_url_normalized = any(%(urls)s)"
+        "    or exists (select 1 from app.event_sources es"
+        "               where es.event_id = e.id and es.url_normalized = any(%(urls)s))"
+        " order by e.created_at, e.id limit 1",
+        {"urls": list(urls_normalized)},
     ).fetchone()
+
+
+def lock_key(url_normalized: str) -> str:
+    return f"url_import:{url_normalized}"
+
+
+def lock_urls(conn: Conn, urls_normalized: Sequence[str]) -> None:
+    """Transaction-scoped advisory locks, one per URL, taken in sorted order (no deadlock):
+    concurrent imports that share any URL (requested or redirect target) run one after
+    the other. Released at commit or rollback."""
+    for url in sorted(set(urls_normalized)):
+        conn.execute("select pg_advisory_xact_lock(hashtext(%s))", (lock_key(url),))
 
 
 def manual_source_id(conn: Conn) -> UUID | None:
