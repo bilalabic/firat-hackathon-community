@@ -24,7 +24,7 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
 
 | Part | Files | Notes |
 |---|---|---|
-| A. Page loading | `importing/page.py`, tests with HTML fixtures | `selectolax`, `trafilatura` (new deps). Uses `common/http.SafeFetcher` (body read, HTML only for import). JSON-LD: `Event` and subtypes (`Hackathon` is not a schema.org type; also accept `@graph`, arrays, `EducationEvent` etc.). Dates: ISO 8601 → date in Europe/Istanbul when a time zone is given. `location` → venue/city/country (`Place`, `PostalAddress`, `VirtualLocation` → online). `eventAttendanceMode` → format. `offers.price == 0` → `is_free`. |
+| A. Page loading | `importing/page.py`, tests with HTML fixtures | `selectolax`, `trafilatura` (new deps). Uses `common/http.SafeFetcher` (body read, HTML only for import). JSON-LD: `Event` and subtypes (`Hackathon` is not a schema.org type; also accept `@graph`, arrays, `EducationEvent` etc.). Dates: ISO 8601 → date in Europe/Istanbul when a time zone is given. `location` → venue/city/country (`Place`, `PostalAddress`, `VirtualLocation` → online). `eventAttendanceMode` → format. every priced offer `price == 0` (or `isAccessibleForFree`) → `is_free`. |
 | B. Extraction | `importing/extraction.py`, `importing/prompts.py`, tests with a fake provider | Schema per field `{value, snippet}`; `wrap_untrusted` + `build_system_prompt`; Turkish dates ("5 Ekim'e kadar") resolved with the fetch date for the year; evidence check on normalized text; rules: `start ≤ end`, `deadline ≤ end`, team `1 ≤ min ≤ max ≤ 20`, URLs http(s), years within fetch year −1 … +2. The LLM never sets verification status. LLM failure → structured fields only, `llm_error` set. |
 | C. Benchmark | `services/api/bench/` (harness, committed); page snapshots and gold files in `services/api/bench/data/` (**gitignored**, third-party pages) | 20 pages (6 legacy + 7 Devpost + 7 Turkish). Gold drafted by the agent, marked `needs_owner_check`. Models per LOCAL_LLM_RESEARCH §2–3 (≤ 4, ≤ 20 GB); verify each tag on ollama.com before `ollama pull`. Report in `docs/research/LLM_BENCHMARK.md`. |
 | D. Data, API, admin | migration (`app.runs`, `app.event_field_evidence`), `importing/service.py`, `importing/router.py`, admin "Import from URL" page and evidence on the review page | Built against the Protocols with fakes; wired to A and B at integration. |
@@ -47,3 +47,15 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
 - Duplicate check in V1.2 is the exact normalized URL only; fuzzy dedup is V1.3.
 - No image download (og:image is only stored as a suggestion in `stats`, not as `poster_url`).
 - No Playwright in V1.2. A JS-only page gives a clear "no readable content" error.
+
+### Known limits (part A)
+
+- JS-only pages fail with "no readable content" even when their JSON-LD has usable
+  structured values; returning structured-only results is not done in V1.2.
+- Fetch timeouts: 20 s per phase for imports and a 45 s wall-clock deadline across
+  redirect hops; a very slow site (one test page took 75 s) still fails with
+  "request timed out". DNS resolution has no timeout of its own.
+- Charsets: only a fixed subset of WHATWG labels is honoured; others fall back to
+  UTF-8, then cp1254. No statistical charset detection.
+- `is_free` is set only when every priced offer is 0 or `isAccessibleForFree` is true;
+  `application_url` comes only from `offers.url` or a `RegisterAction` target.

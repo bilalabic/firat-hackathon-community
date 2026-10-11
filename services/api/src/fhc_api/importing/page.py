@@ -13,6 +13,7 @@ is ignored.
 import codecs
 import html
 import json
+import logging
 import re
 from collections.abc import Callable, Iterator
 from datetime import UTC, date, datetime
@@ -38,7 +39,12 @@ from fhc_api.importing.models import (
     StructuredValue,
 )
 
+logger = logging.getLogger("fhc_api.importing")
+
 HTML_CONTENT_TYPES = frozenset({"text/html", "application/xhtml+xml"})
+# Per-phase fetch timeout. Higher than the SafeFetcher default: on slow networks the TLS
+# handshake alone took 5-10 s, and the admin waits for the import anyway.
+FETCH_TIMEOUT_SECONDS = 20.0
 # Below this, the page is most likely an empty shell that renders in the browser.
 MIN_TEXT_CHARS = 200
 SNIPPET_MAX_CHARS = 300
@@ -48,6 +54,8 @@ _CHARSET_SNIFF_BYTES = 4096
 
 # schema.org/Event and its subtypes (checked on schema.org 2026-10-11). `@type` may also
 # be written as a full IRI or with a prefix (`https://schema.org/Event`, `schema:Event`).
+# "Hackathon" is not a schema.org type (see the design doc); some pages use it anyway,
+# and accepting it is harmless.
 EVENT_TYPES = frozenset(
     {
         "Event",
@@ -87,15 +95,41 @@ _ATTENDANCE_MODES: dict[str, EventFormat] = {
 # (no country table in V1.2). Two-letter codes are accepted as they are.
 _COUNTRY_NAMES = {"turkiye": "TR", "turkey": "TR", "turkiye cumhuriyeti": "TR"}
 _ONLINE_WORDS = frozenset({"online", "virtual", "cevrimici", "cevrim ici", "uzaktan"})
-# WHATWG maps these labels to the Windows code pages (the bytes 0x80-0x9F differ).
-_CHARSET_ALIASES = {
-    "iso-8859-1": "cp1252",
-    "latin1": "cp1252",
-    "latin-1": "cp1252",
-    "ascii": "cp1252",
-    "us-ascii": "cp1252",
-    "iso-8859-9": "cp1254",
-    "latin5": "cp1254",
+# Charset labels accepted from the page or the HTTP header, a subset of the WHATWG
+# Encoding Standard labels, mapped to Python codecs. A fixed list on purpose: Python's
+# codec registry also has non-text codecs ("base64", "zlib", "rot13") and text codecs a
+# page must not choose ("idna", "unicode_escape"). WHATWG maps the Latin-1 and Latin-5
+# labels to the Windows code pages (the bytes 0x80-0x9F differ).
+_ENCODING_LABELS: dict[str, str] = {
+    **dict.fromkeys(("utf-8", "utf8", "unicode-1-1-utf-8"), "utf-8"),
+    **dict.fromkeys(
+        ("iso-8859-1", "iso8859-1", "latin1", "latin-1", "l1", "ascii", "us-ascii"), "cp1252"
+    ),
+    **dict.fromkeys(("iso-8859-9", "iso8859-9", "latin5", "l5"), "cp1254"),
+    **{f"{prefix}{n}": f"cp{n}" for n in range(1250, 1259) for prefix in ("windows-", "cp")},
+    **{
+        f"{prefix}{n}": f"iso8859-{n}"
+        for n in (2, 3, 4, 5, 6, 7, 8, 10, 13, 14, 15, 16)
+        for prefix in ("iso-8859-", "iso8859-")
+    },
+    "windows-874": "cp874",
+    "koi8-r": "koi8-r",
+    "koi8-u": "koi8-u",
+    "ibm866": "cp866",
+    "macintosh": "mac-roman",
+    "x-mac-cyrillic": "mac-cyrillic",
+    "gbk": "gbk",
+    "gb2312": "gbk",
+    "gb18030": "gb18030",
+    "big5": "big5",
+    "euc-jp": "euc_jp",
+    "iso-2022-jp": "iso2022_jp",
+    "shift_jis": "shift_jis",
+    "sjis": "shift_jis",
+    "euc-kr": "euc_kr",
+    "utf-16": "utf-16-le",
+    "utf-16le": "utf-16-le",
+    "utf-16be": "utf-16-be",
 }
 _BOMS = (
     (codecs.BOM_UTF8, "utf-8"),
@@ -117,7 +151,7 @@ class HtmlPageLoader:
     def __init__(
         self, fetcher: SafeFetcher | None = None, *, now: Callable[[], datetime] = _utc_now
     ) -> None:
-        self._fetcher = fetcher or SafeFetcher()
+        self._fetcher = fetcher or SafeFetcher(timeout=FETCH_TIMEOUT_SECONDS)
         self._now = now
 
     def load_page(self, url: str) -> PageContent:
@@ -132,12 +166,20 @@ class HtmlPageLoader:
             raise PageError(f"page could not be fetched: {exc}") from exc
         if not 200 <= result.status_code < 300:
             raise PageError(f"page returned HTTP {result.status_code}")
-        return parse_page(
-            decode_html(result.body, result.charset),
-            requested_url=url,
-            final_url=result.url,
-            fetched_at=fetched_at,
-        )
+        try:
+            return parse_page(
+                decode_html(result.body, result.charset),
+                requested_url=url,
+                final_url=result.url,
+                fetched_at=fetched_at,
+            )
+        except PageError:
+            raise
+        except Exception as exc:
+            # The page is untrusted: a parser bug must not become a 500. The type name
+            # only, never page content, goes to the log.
+            logger.warning("import: parsing the page failed (%s)", type(exc).__name__)
+            raise PageError("page could not be parsed") from exc
 
 
 def parse_page(
@@ -175,26 +217,31 @@ def decode_html(body: bytes, declared: str | None) -> str:
     Turkish) is the last resort for undeclared legacy pages."""
     for bom, bom_encoding in _BOMS:
         if body.startswith(bom):
-            return body[len(bom) :].decode(bom_encoding, errors="replace")
+            return _decode(body[len(bom) :], bom_encoding)
+    if encoding := _python_encoding(declared):
+        return _decode(body, encoding)
     sniffed = _META_CHARSET_RE.search(body[:_CHARSET_SNIFF_BYTES])
-    for label in (declared, sniffed.group(1).decode("ascii") if sniffed else None):
-        if encoding := _python_encoding(label):
-            return body.decode(encoding, errors="replace")
+    label = sniffed.group(1).decode("ascii").strip().lower() if sniffed else ""
+    if label.startswith(("utf-16", "utf-32")):
+        # WHATWG: a <meta> that could be read as ASCII is not UTF-16/32; it means UTF-8.
+        return _decode(body, "utf-8")
+    if encoding := _python_encoding(label):
+        return _decode(body, encoding)
     try:
         return body.decode("utf-8")
     except UnicodeDecodeError:
         return body.decode("cp1254", errors="replace")
 
 
-def _python_encoding(label: str | None) -> str | None:
-    if not label:
-        return None
-    label = label.strip().lower()
-    label = _CHARSET_ALIASES.get(label, label)
+def _decode(body: bytes, encoding: str) -> str:
     try:
-        return codecs.lookup(label).name
-    except LookupError:
-        return None
+        return body.decode(encoding, errors="replace")
+    except (LookupError, UnicodeError):  # not expected for the listed codecs; be safe
+        return body.decode("utf-8", errors="replace")
+
+
+def _python_encoding(label: str | None) -> str | None:
+    return _ENCODING_LABELS.get(label.strip().lower()) if label else None
 
 
 # --- JSON-LD ------------------------------------------------------------------------
@@ -317,15 +364,30 @@ def _map_offers(event: dict[str, Any], put: _Put, page_urls: set[str], base_url:
     mode_free = event.get("isAccessibleForFree")
     if mode_free is True or (isinstance(mode_free, str) and mode_free.lower() == "true"):
         put("is_free", True, mode_free)
-    for offer in offers:
-        if _decimal(offer.get("price")) == 0:
-            put("is_free", True, offer)
-    # Registration link: the offer's URL, else the event's own `url` when it points
-    # elsewhere (the page itself is already the event's official URL).
-    for candidate in [offer.get("url") for offer in offers] + [event.get("url")]:
+    # Free only when every priced offer is 0: "0" for students and "500" for others is
+    # not a free event. No price at all says nothing.
+    prices = [price for offer in offers if (price := _decimal(offer.get("price"))) is not None]
+    if prices and all(price == 0 for price in prices):
+        put("is_free", True, raw)
+    # Registration link: an offer's URL, else a RegisterAction target. The event's own
+    # `url` is not used: it is usually the event page, not the application form.
+    for candidate in [offer.get("url") for offer in offers] + _register_targets(event):
         url = _absolute_http_url(candidate, base_url)
         if url and not _same_page(url, page_urls):
             put("application_url", url, candidate)
+
+
+def _register_targets(event: dict[str, Any]) -> list[object]:
+    """`potentialAction: {"@type": "RegisterAction", "target": url | EntryPoint}`."""
+    raw = event.get("potentialAction")
+    targets: list[object] = []
+    for action in raw if isinstance(raw, list) else [raw]:
+        if not isinstance(action, dict) or "RegisterAction" not in _types(action):
+            continue
+        target = action.get("target")
+        for item in target if isinstance(target, list) else [target]:
+            targets.append(item.get("urlTemplate") if isinstance(item, dict) else item)
+    return targets
 
 
 def _first_name(raw: object) -> str | None:
@@ -353,10 +415,10 @@ def _event_date(raw: object) -> date | None:
         return None
     try:
         parsed = datetime.fromisoformat(raw.strip())
-    except ValueError:
+        if parsed.tzinfo is not None:
+            parsed = parsed.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
+    except (ValueError, OverflowError):  # OverflowError: shifted past year 1 or 9999
         return None
-    if parsed.tzinfo is not None:
-        parsed = parsed.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
     return parsed.date()
 
 
@@ -378,12 +440,14 @@ def _country_code(raw: object) -> str | None:
 
 
 def _decimal(raw: object) -> Decimal | None:
+    """A finite, non-negative price; NaN, sNaN, Infinity and negatives are no price."""
     if isinstance(raw, bool) or not isinstance(raw, int | float | str):
         return None
     try:
-        return Decimal(str(raw).strip())
+        value = Decimal(str(raw).strip())
     except InvalidOperation:
         return None
+    return value if value.is_finite() and value >= 0 else None
 
 
 # --- meta tags ----------------------------------------------------------------------
