@@ -40,6 +40,7 @@ import httpx2
 from scoring import Outcome, percentile, score_page, summarize
 
 from fhc_api.common.http import SafeFetcher
+from fhc_api.config import Settings
 from fhc_api.importing.models import (
     EXTRACTABLE_FIELDS,
     MAX_TEXT_CHARS,
@@ -145,7 +146,13 @@ def _saved_fetcher(pages: dict[str, bytes]) -> SafeFetcher:
 
 def make_pipeline(model: str, pages: dict[str, bytes], loader_kind: str) -> Pipeline:
     """Create loader + extractor for one model. The only code that knows their constructors."""
-    provider = OllamaProvider(OLLAMA_URL, model, OLLAMA_TIMEOUT_SECONDS)
+    # Same context window as the API default (Settings.OLLAMA_NUM_CTX).
+    provider = OllamaProvider(
+        OLLAMA_URL,
+        model,
+        OLLAMA_TIMEOUT_SECONDS,
+        num_ctx=Settings.model_fields["OLLAMA_NUM_CTX"].default,
+    )
     if loader_kind == "builtin":
         loader: LoaderLike = BuiltinLoader(pages)
     else:
