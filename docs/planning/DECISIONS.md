@@ -88,6 +88,7 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Status:** Accepted (2026-09-28)
 
 ### D-15 Crawling stack (V1.2+): httpx2 + selectolax + trafilatura, Playwright only per-source; no Crawl4AI; no SQLite
+- **V1.2:** `selectolax` 1.0.0 (MIT) and `trafilatura` 2.3.1 (Apache-2.0) added; versions and transitive licenses in CRAWLING_RESEARCH §1
 - **Status:** Accepted (2026-09-28)
 
 ### D-16 Provenance: event-level `event_sources` in V1; field-level evidence in V1.2

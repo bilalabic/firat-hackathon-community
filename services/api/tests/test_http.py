@@ -10,6 +10,7 @@ from fhc_api.common.http import (
     MAX_REDIRECTS,
     USER_AGENT,
     BlockedUrlError,
+    ContentTypeError,
     FetchError,
     SafeFetcher,
     check_url,
@@ -354,6 +355,24 @@ def test_other_content_types_are_refused_when_reading_a_body(content_type: str) 
 
     with pytest.raises(FetchError, match="not allowed"):
         fetcher(lambda _: response).fetch("https://example.com/")
+
+
+def test_content_types_narrow_the_allow_list() -> None:
+    response = httpx2.Response(200, headers={"content-type": "application/json"}, content=b"{}")
+
+    with pytest.raises(ContentTypeError, match="'application/json' is not allowed"):
+        fetcher(lambda _: response).fetch(
+            "https://example.com/", content_types=frozenset({"text/html"})
+        )
+
+
+def test_charset_from_the_content_type_header() -> None:
+    response = httpx2.Response(
+        200, headers={"content-type": "text/html; charset=windows-1254"}, content=b"x"
+    )
+
+    assert fetcher(lambda _: response).fetch("https://example.com/").charset == "windows-1254"
+    assert fetcher(lambda _: html()).fetch("https://example.com/").charset == "utf-8"
 
 
 def test_headers_only_fetch_skips_the_body_and_content_type_check() -> None:
