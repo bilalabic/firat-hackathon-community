@@ -10,10 +10,13 @@ from typing import Any
 
 import httpx2
 import pytest
+import trafilatura
 
 from fhc_api.common.http import SafeFetcher
+from fhc_api.importing import page as page_module
 from fhc_api.importing.models import MAX_TEXT_CHARS, PageContent, PageError, StructuredValue
 from fhc_api.importing.page import (
+    FETCH_TIMEOUT_SECONDS,
     MIN_TEXT_CHARS,
     SNIPPET_MAX_CHARS,
     HtmlPageLoader,
@@ -57,7 +60,7 @@ def values(page: PageContent) -> dict[str, object]:
 
 
 def loader(
-    handler: Handler, dns: dict[str, list[str]] | None = None, **kwargs: int
+    handler: Handler, dns: dict[str, list[str]] | None = None, **kwargs: Any
 ) -> HtmlPageLoader:
     table = dns if dns is not None else {"example.org": [PUBLIC_IP]}
 
@@ -242,6 +245,9 @@ def test_sub_events_do_not_replace_the_event() -> None:
         ("14.11.2026", None),
         ("2026-13-01", None),
         ("next Saturday", None),
+        # Shifting to Istanbul would leave the datetime range: OverflowError, ignored.
+        ("9999-12-31T23:00:00-05:00", None),
+        ("0001-01-01T00:00:00+05:00", None),
     ],
 )
 def test_start_date(raw: str, expected: date | None) -> None:
@@ -331,12 +337,24 @@ def test_venue_equal_to_the_event_name_is_dropped() -> None:
     [
         ({"offers": {"price": 0}}, True),
         ({"offers": {"price": "0.00", "priceCurrency": "TRY"}}, True),
-        ({"offers": [{"price": 250}, {"price": "0"}]}, True),
+        ({"offers": [{"price": "0"}, {"price": 0.0}, {"name": "no price"}]}, True),
+        # Mixed free and paid offers ("0" for students, "500" for others): not free.
+        ({"offers": [{"price": 500}, {"price": "0"}]}, None),
+        ({"offers": [{"price": "0"}, {"price": "500"}]}, None),
         ({"offers": {"price": 250}}, None),
         ({"offers": {"price": "Free"}}, None),
         ({"offers": {"price": True}}, None),
+        ({"offers": {"name": "Ticket"}}, None),
         ({"isAccessibleForFree": True}, True),
         ({"isAccessibleForFree": "True"}, True),
+        ({"isAccessibleForFree": True, "offers": [{"price": 500}]}, True),
+        # Non-finite and negative prices are no price (sNaN used to raise on comparison).
+        ({"offers": {"price": "sNaN"}}, None),
+        ({"offers": {"price": "NaN"}}, None),
+        ({"offers": {"price": "-Infinity"}}, None),
+        ({"offers": {"price": "Infinity"}}, None),
+        ({"offers": {"price": "-5"}}, None),
+        ({"offers": [{"price": "sNaN"}, {"price": "0"}]}, True),
     ],
 )
 def test_is_free(properties: dict[str, Any], expected: bool | None) -> None:
@@ -348,15 +366,34 @@ def test_is_free(properties: dict[str, Any], expected: bool | None) -> None:
     [
         ({"offers": {"url": "https://apply.example.com/form"}}, "https://apply.example.com/form"),
         ({"offers": {"url": "/hack/register"}}, "https://example.org/hack/register"),
-        ({"url": "https://register.example.net/x"}, "https://register.example.net/x"),
-        ({"url": PAGE_URL}, None),  # the page itself
-        ({"url": "https://www.example.org/hack/?utm_source=x"}, None),  # same, normalized
+        ({"url": "https://register.example.net/x"}, None),  # the event's own URL: not used
+        ({"offers": {"url": PAGE_URL}}, None),  # the page itself
+        ({"offers": {"url": "https://www.example.org/hack/?utm_source=x"}}, None),  # same
         ({"offers": {"url": "javascript:alert(1)"}}, None),
         ({"offers": {"url": "ftp://example.org/file"}}, None),
         ({"offers": {"url": "https://user:pw@example.org/"}}, None),
         (
-            {"offers": {"url": "mailto:team@example.org"}, "url": "https://reg.example.com/"},
-            "https://reg.example.com/",  # falls back to the event's own URL
+            {"potentialAction": {"@type": "RegisterAction", "target": "https://reg.example.com/"}},
+            "https://reg.example.com/",
+        ),
+        (
+            {
+                "potentialAction": [
+                    {"@type": "ViewAction", "target": "https://view.example.com/"},
+                    {
+                        "@type": "RegisterAction",
+                        "target": {"@type": "EntryPoint", "urlTemplate": "/hack/form"},
+                    },
+                ]
+            },
+            "https://example.org/hack/form",
+        ),
+        (
+            {
+                "offers": {"url": "mailto:team@example.org"},
+                "potentialAction": {"@type": "RegisterAction", "target": "https://r.example/"},
+            },
+            "https://r.example/",  # an unusable offer URL falls back to the RegisterAction
         ),
     ],
 )
@@ -366,7 +403,7 @@ def test_application_url(properties: dict[str, Any], expected: str | None) -> No
 
 def test_application_url_equal_to_the_final_url_is_dropped() -> None:
     page = parse(
-        jsonld_page(event(url="https://example.org/hack-2026")),
+        jsonld_page(event(offers={"url": "https://example.org/hack-2026"})),
         url="https://example.org/h",
         final_url="https://example.org/hack-2026",
     )
@@ -477,6 +514,19 @@ def test_long_text_is_truncated() -> None:
     assert len(page.text) == MAX_TEXT_CHARS
 
 
+@pytest.mark.parametrize(
+    ("length", "truncated"),
+    [(MAX_TEXT_CHARS - 1, False), (MAX_TEXT_CHARS, False), (MAX_TEXT_CHARS + 1, True)],
+)
+def test_truncation_boundary(monkeypatch: pytest.MonkeyPatch, length: int, truncated: bool) -> None:
+    monkeypatch.setattr(trafilatura, "extract", lambda *_, **__: "x" * length)
+
+    page = parse(jsonld_page())
+
+    assert page.text_truncated is truncated
+    assert len(page.text) == min(length, MAX_TEXT_CHARS)
+
+
 def test_plain_body_text_is_the_fallback() -> None:
     # A bare list of short lines: too little for trafilatura's article detection.
     lines = "".join(f"<div>Kural {i}: takımlar en fazla dört kişidir.</div>" for i in range(10))
@@ -516,6 +566,56 @@ HTTP_EQUIV = '<meta http-equiv="Content-Type" content="text/html; charset=iso-88
 )
 def test_decode_html(body: bytes, declared: str | None) -> None:
     assert decode_html(body, declared).endswith(TURKISH)
+
+
+CYRILLIC = "Хакатон для студентов"
+
+
+def test_meta_charset_is_sniffed() -> None:
+    body = f'<html><head><meta charset="koi8-r"></head><body>{CYRILLIC}'.encode("koi8-r")
+
+    assert CYRILLIC in decode_html(body, None)
+
+
+def test_http_charset_wins_over_meta_charset() -> None:
+    body = f'<meta charset="windows-1254">{CYRILLIC}'.encode("koi8-r")
+
+    assert decode_html(body, "koi8-r").endswith(CYRILLIC)
+
+
+@pytest.mark.parametrize(
+    "label",
+    # Python codecs that are not text encodings, or that a page must not choose.
+    [
+        *("base64", "rot13", "hex", "zlib", "bz2", "uu", "quopri"),
+        *("idna", "punycode", "utf-7", "unicode_escape", "raw_unicode_escape", "utf-32", "mbcs"),
+    ],
+)
+@pytest.mark.parametrize("where", ["http", "meta"])
+def test_non_text_charsets_are_ignored(label: str, where: str) -> None:
+    head = f'<meta charset="{label}">' if where == "meta" else ""
+    body = f"{head}{TURKISH}".encode()
+
+    assert decode_html(body, label if where == "http" else None).endswith(TURKISH)
+
+
+@pytest.mark.parametrize("label", ["utf-16", "UTF-16LE", "utf-16be", "utf-32"])
+def test_utf16_in_meta_means_utf8(label: str) -> None:
+    body = f'<meta charset="{label}">{TURKISH}'.encode()
+
+    assert decode_html(body, None).endswith(TURKISH)
+
+
+def test_utf16_from_the_http_header_is_honoured() -> None:
+    assert decode_html(TURKISH.encode("utf-16-le"), "utf-16le") == TURKISH
+
+
+def test_non_text_charset_from_http_does_not_break_the_import() -> None:
+    body = jsonld_page(event(name="Doğu Hackathonu")).encode()
+
+    page = loader(respond(body, "text/html; charset=base64")).load_page(PAGE_URL)
+
+    assert page.structured["title"].value == "Doğu Hackathonu"
 
 
 def test_http_charset_reaches_the_decoder() -> None:
@@ -568,6 +668,43 @@ def test_timeout() -> None:
 
     with pytest.raises(PageError, match="page could not be fetched: request timed out"):
         loader(handler).load_page(PAGE_URL)
+
+
+def test_unexpected_parser_errors_become_page_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(*args: object, **kwargs: object) -> PageContent:
+        raise RuntimeError("secret page content")
+
+    monkeypatch.setattr(page_module, "parse_page", broken)
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    with pytest.raises(PageError, match=r"^page could not be parsed$"):
+        loader(respond(body)).load_page(PAGE_URL)
+
+    assert "RuntimeError" in caplog.text
+    assert "secret page content" not in caplog.text
+
+
+def test_page_errors_from_parsing_are_kept() -> None:
+    body = fixture("js_only.html").encode("utf-8")
+
+    with pytest.raises(PageError, match="no readable content"):
+        loader(respond(body)).load_page(PAGE_URL)
+
+
+def test_default_fetcher_has_the_longer_import_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> SafeFetcher:
+        created.append(kwargs)
+        return SafeFetcher()
+
+    monkeypatch.setattr(page_module, "SafeFetcher", record)
+    HtmlPageLoader()
+
+    assert created == [{"timeout": FETCH_TIMEOUT_SECONDS}]
+    assert FETCH_TIMEOUT_SECONDS == 20.0
 
 
 def test_redirect_sets_the_final_url() -> None:
