@@ -11,7 +11,7 @@ import { z } from "zod"
 import { api } from "@/lib/api/client"
 import type { ApiResult } from "@/lib/api/errors"
 import type { ChannelActionOut } from "@/lib/api/types"
-import type { ActionResult } from "@/lib/form-state"
+import { MAY_HAVE_APPLIED, type ChannelActionResult } from "@/lib/channel"
 
 const uuid = z.uuid()
 const contentHash = z.string().regex(/^[0-9a-f]{64}$/)
@@ -19,42 +19,48 @@ const contentHash = z.string().regex(/^[0-9a-f]{64}$/)
 const postInput = z.object({ eventId: uuid, contentHash })
 const publicationInput = z.object({ eventId: uuid, publicationId: uuid })
 
-function settle(result: ApiResult<ChannelActionOut>): ActionResult {
-  if (!result.ok) {
-    // 409 (stale preview, already posted) and 502 (Telegram refused; the attempt is
-    // recorded) both change what the page shows: re-render it. The message stays visible.
-    if (result.error.kind === "conflict" || result.error.kind === "upstream") refresh()
-    return { ok: false, message: result.error.message }
-  }
+const INVALID: ChannelActionResult = { ok: false, kind: "invalid", message: "Invalid channel post request." }
+
+function settle(
+  result: ApiResult<ChannelActionOut>,
+  { postsToTelegram = false }: { postsToTelegram?: boolean } = {}
+): ChannelActionResult {
+  // Re-render on every outcome: a failed write may still have changed what the page shows
+  // (a 502 records the attempt, a 409 means the page was stale, and after a timeout or a
+  // dropped connection the API usually finishes the write anyway).
   refresh()
-  return { ok: true, message: result.data.message }
+  if (result.ok) return { ok: true, message: result.data.message }
+  const { kind, message } = result.error
+  // Aborting the request does not stop the API handler, which usually posts anyway.
+  const ambiguous = postsToTelegram && (kind === "timeout" || kind === "unreachable")
+  return { ok: false, kind, message: ambiguous ? `${message} ${MAY_HAVE_APPLIED}` : message }
 }
 
-export async function sendChannelPost(input: { eventId: string; contentHash: string }): Promise<ActionResult> {
+export async function sendChannelPost(input: { eventId: string; contentHash: string }): Promise<ChannelActionResult> {
   const parsed = postInput.safeParse(input)
-  if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
+  if (!parsed.success) return INVALID
   const { eventId, contentHash: content_hash } = parsed.data
-  return settle(await api.sendChannelPost(eventId, { content_hash }))
+  return settle(await api.sendChannelPost(eventId, { content_hash }), { postsToTelegram: true })
 }
 
-export async function updateChannelPost(input: { eventId: string; contentHash: string }): Promise<ActionResult> {
+export async function updateChannelPost(input: { eventId: string; contentHash: string }): Promise<ChannelActionResult> {
   const parsed = postInput.safeParse(input)
-  if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
+  if (!parsed.success) return INVALID
   const { eventId, contentHash: content_hash } = parsed.data
-  return settle(await api.updateChannelPost(eventId, { content_hash }))
+  return settle(await api.updateChannelPost(eventId, { content_hash }), { postsToTelegram: true })
 }
 
-export async function deleteChannelPost(input: { eventId: string; publicationId: string }): Promise<ActionResult> {
+export async function deleteChannelPost(input: { eventId: string; publicationId: string }): Promise<ChannelActionResult> {
   const parsed = publicationInput.safeParse(input)
-  if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
+  if (!parsed.success) return INVALID
   const { eventId, publicationId } = parsed.data
   return settle(await api.deleteChannelPost(eventId, { publication_id: publicationId }))
 }
 
 /** The operator checked the channel: the uncertain send is not there, so allow a new send. */
-export async function resolveChannelPost(input: { eventId: string; publicationId: string }): Promise<ActionResult> {
+export async function resolveChannelPost(input: { eventId: string; publicationId: string }): Promise<ChannelActionResult> {
   const parsed = publicationInput.safeParse(input)
-  if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
+  if (!parsed.success) return INVALID
   const { eventId, publicationId } = parsed.data
   return settle(await api.resolveChannelPost(eventId, publicationId, { outcome: "not_in_channel" }))
 }

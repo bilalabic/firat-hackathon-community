@@ -6,7 +6,7 @@
 // (delete) or allows a second post (resolve).
 
 import { useEffect, useRef, useState, useTransition } from "react"
-import { CircleAlertIcon } from "lucide-react"
+import { CircleAlertIcon, TriangleAlertIcon } from "lucide-react"
 import { toast } from "sonner"
 
 import { focusableIn } from "@/components/event-transitions"
@@ -27,8 +27,12 @@ import {
   sendChannelPost,
   updateChannelPost,
 } from "@/lib/actions/channel"
-import { channelActionMeta, type ChannelAction } from "@/lib/channel"
-import type { ActionResult } from "@/lib/form-state"
+import {
+  channelActionMeta,
+  isUnknownOutcome,
+  type ChannelAction,
+  type ChannelActionResult,
+} from "@/lib/channel"
 
 export function ChannelPostActions({
   eventId,
@@ -50,7 +54,10 @@ export function ChannelPostActions({
   const groupRef = useRef<HTMLDivElement>(null)
   const openerRef = useRef<HTMLElement | null>(null)
   const [pending, startTransition] = useTransition()
-  const [error, setError] = useState<string | null>(null)
+  const [error, setError] = useState<{ message: string; unknownOutcome: boolean } | null>(null)
+  const [running, setRunning] = useState<ChannelAction | null>(null)
+  // Set synchronously, so a second confirm before React re-renders is ignored.
+  const inFlight = useRef(false)
   const [dialog, setDialog] = useState<ChannelAction | null>(null)
   // Keep the last action rendered while the dialog animates out (see TransitionDialog).
   const [shown, setShown] = useState<ChannelAction | null>(dialog)
@@ -67,26 +74,31 @@ export function ChannelPostActions({
     wasPending.current = pending
   }, [pending])
 
-  const run = (action: ChannelAction) =>
+  const run = (action: ChannelAction) => {
+    if (inFlight.current) return
+    inFlight.current = true
+    setError(null)
+    setRunning(action)
     startTransition(async () => {
-      let result: ActionResult
-      if (action === "delete" || action === "resolve") {
-        const act = action === "delete" ? deleteChannelPost : resolveChannelPost
-        result = publicationId
-          ? await act({ eventId, publicationId })
-          : { ok: false, message: "There is no post for this action." }
-      } else {
-        const send = action === "send" ? sendChannelPost : updateChannelPost
-        result = await send({ eventId, contentHash })
-      }
-      if (result.ok) {
-        setError(null)
-        toast.success(result.message)
-      } else {
-        setError(result.message)
-        toast.error(result.message)
+      try {
+        let result: ChannelActionResult
+        if (action === "delete" || action === "resolve") {
+          const act = action === "delete" ? deleteChannelPost : resolveChannelPost
+          result = publicationId
+            ? await act({ eventId, publicationId })
+            : { ok: false, kind: "invalid", message: "There is no post for this action." }
+        } else {
+          const send = action === "send" ? sendChannelPost : updateChannelPost
+          result = await send({ eventId, contentHash })
+        }
+        // Errors are announced by the alert below (role=alert), successes by a toast.
+        if (result.ok) toast.success(result.message)
+        else setError({ message: result.message, unknownOutcome: isUnknownOutcome(result.kind) })
+      } finally {
+        inFlight.current = false
       }
     })
+  }
 
   const actions: ChannelAction[] = ["resolve", "send", "update", "delete"]
   const offered = actions.filter((action) => allowed[action])
@@ -124,17 +136,24 @@ export function ChannelPostActions({
         })}
         {pending && (
           <span role="status" className="text-sm text-muted-foreground">
-            Waiting for Telegram…
+            {running === "resolve" ? "Saving…" : "Waiting for Telegram…"}
           </span>
         )}
       </div>
-      {error && (
-        <Alert variant="destructive">
-          <CircleAlertIcon />
-          <AlertTitle>Channel action not applied</AlertTitle>
-          <AlertDescription>{error}</AlertDescription>
-        </Alert>
-      )}
+      {error &&
+        (error.unknownOutcome ? (
+          <Alert variant="warning">
+            <TriangleAlertIcon />
+            <AlertTitle>Outcome unknown</AlertTitle>
+            <AlertDescription>{error.message}</AlertDescription>
+          </Alert>
+        ) : (
+          <Alert variant="destructive">
+            <CircleAlertIcon />
+            <AlertTitle>Channel action failed</AlertTitle>
+            <AlertDescription>{error.message}</AlertDescription>
+          </Alert>
+        ))}
       <AlertDialog open={dialog !== null} onOpenChange={(open) => !open && setDialog(null)}>
         {shown && meta && (
           <AlertDialogContent
@@ -155,6 +174,7 @@ export function ChannelPostActions({
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <Button
                 variant={meta.destructive ? "destructive" : "default"}
+                disabled={pending}
                 onClick={() => {
                   run(shown)
                   setDialog(null)

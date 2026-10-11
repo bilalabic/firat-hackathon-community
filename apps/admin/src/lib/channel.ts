@@ -3,6 +3,7 @@
 // `can_resolve`); this file only describes how states and actions are presented.
 // Type-only imports: safe to use from Client Components.
 
+import type { ApiErrorKind } from "@/lib/api/errors"
 import type {
   ChannelHistory,
   ChannelPreview,
@@ -81,6 +82,22 @@ export function channelActionMeta(action: ChannelAction, cardChanged = false): C
           "Confirm only after checking the channel: the message is not there (or you deleted it there by hand). The attempt is recorded as failed and the event can be sent again. If the message is in the channel, a new send would post it twice.",
       }
   }
+}
+
+/** Result of a channel Server Action; `kind` tells a refusal from an unknown outcome. */
+export type ChannelActionResult =
+  | { ok: true; message: string }
+  | { ok: false; kind: ApiErrorKind | "invalid"; message: string }
+
+/** Appended when a send or update timed out or lost the connection to the API. */
+export const MAY_HAVE_APPLIED = "It may have been applied anyway: reload and check the channel before retrying."
+
+/**
+ * Whether a failed action may still have reached the channel: Telegram did not answer
+ * clearly (502), or the API's answer never arrived (timeout, dropped connection).
+ */
+export function isUnknownOutcome(kind: ApiErrorKind | "invalid"): boolean {
+  return kind === "upstream" || kind === "timeout" || kind === "unreachable"
 }
 
 /** Audit `action` values written by the API, as shown in the history. */

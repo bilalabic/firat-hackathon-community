@@ -8,6 +8,7 @@ import {
   channelNotice,
   decodeEntities,
   historyRows,
+  isUnknownOutcome,
   parseCaptionHtml,
   postStateMeta,
   publicationStatusLabel,
@@ -75,6 +76,18 @@ describe("parseCaptionHtml", () => {
     expect(parseCaptionHtml('<a href="javascript:alert(1)">x</a>')).toEqual([{ tag: "a", href: null, children: ["x"] }])
   })
 
+  it("renders single-quoted and unquoted hrefs as unlinked text", () => {
+    // Only the double-quoted form our templates produce becomes a link (a span otherwise).
+    expect(parseCaptionHtml("<a href='https://example.org'>x</a>")).toEqual([{ tag: "a", href: null, children: ["x"] }])
+    expect(parseCaptionHtml("<a href=https://example.org>x</a>")).toEqual([{ tag: "a", href: null, children: ["x"] }])
+  })
+
+  it("decodes numeric entities inside href", () => {
+    expect(parseCaptionHtml('<a href="https://example.org/?a=1&#38;b=&#x32;">x</a>')).toEqual([
+      { tag: "a", href: "https://example.org/?a=1&b=2", children: ["x"] },
+    ])
+  })
+
   it("keeps unknown, stray and unclosed tags as literal text", () => {
     expect(parseCaptionHtml("<script>x</script>")).toEqual(["<script>x</script>"])
     expect(parseCaptionHtml("a</b>c")).toEqual(["a</b>c"])
@@ -127,6 +140,11 @@ describe("channel actions", () => {
     expect(channelActionMeta("delete").destructive).toBe(true)
     expect(channelActionMeta("resolve").label).toBe("Mark as not posted")
     expect(channelActionMeta("resolve").confirm).toMatch(/after checking the channel/)
+  })
+
+  it("treats 502, timeouts and dropped connections as an unknown outcome", () => {
+    expect(["upstream", "timeout", "unreachable"].every((kind) => isUnknownOutcome(kind as "upstream"))).toBe(true)
+    expect(["conflict", "not_found", "validation", "invalid"].some((kind) => isUnknownOutcome(kind as "conflict"))).toBe(false)
   })
 
   it("labels an uncertain failed send apart from a plain failure", () => {
