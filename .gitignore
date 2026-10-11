@@ -40,3 +40,6 @@ Thumbs.db
 
 # Claude Code agent worktrees
 .claude/worktrees/
+
+# Benchmark page snapshots and gold files (third-party content, V1.2 part C)
+services/api/bench/data/
