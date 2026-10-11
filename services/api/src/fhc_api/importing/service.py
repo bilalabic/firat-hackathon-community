@@ -42,7 +42,7 @@ from pydantic import ValidationError
 
 from fhc_api.common import audit
 from fhc_api.common.errors import conflict, not_found, unprocessable
-from fhc_api.common.fields import check_http_url
+from fhc_api.common.fields import URL_MAX_LENGTH, check_http_url
 from fhc_api.common.normalize import normalize_url
 from fhc_api.db import Conn, ConnFactory
 from fhc_api.events import repository as events_repository
@@ -80,6 +80,7 @@ TITLE_MIN, TITLE_MAX = 3, 160
 SNIPPET_MAX = 500
 DETAIL_MAX = 500
 STATS_TEXT_MAX = 500
+EXTRACTED_BY_MAX = 100  # app.event_field_evidence.extracted_by check
 
 # consistency_problems() message -> the field dropped to resolve it.
 _CONSISTENCY_DROPS: dict[str, ExtractableField] = {
@@ -152,6 +153,10 @@ def clean_title(text: str | None) -> str | None:
     if len(title) > TITLE_MAX:
         title = title[: TITLE_MAX - 1].rstrip() + "…"
     return title if len(title) >= TITLE_MIN else None
+
+
+def _too_long(url: str) -> bool:
+    return len(url) > URL_MAX_LENGTH
 
 
 def _clip(text: str | None, limit: int) -> str | None:
@@ -227,16 +232,17 @@ def _stats(
     if outcome:
         stats["outcome"] = outcome
     if page is not None:
-        stats["final_url"] = _clip(page.final_url, STATS_TEXT_MAX)
+        if not _too_long(page.final_url):  # a clipped URL would be a wrong link
+            stats["final_url"] = page.final_url
         stats["text_chars"] = len(page.text)
         stats["text_truncated"] = page.text_truncated
         stats["structured_fields"] = len(page.structured)
-        if page.image_url:
-            stats["image_url"] = _clip(page.image_url, STATS_TEXT_MAX)
+        if page.image_url and not _too_long(page.image_url):
+            stats["image_url"] = page.image_url
     if official_url is not None:
         stats["official_url"] = official_url
     if result is not None:
-        stats["extracted_by"] = result.extracted_by
+        stats["extracted_by"] = _clip(result.extracted_by, EXTRACTED_BY_MAX)
         stats["llm_error"] = _clip(result.llm_error, STATS_TEXT_MAX)
         stats["llm_ms"] = result.llm_duration_ms
     if draft is not None:
@@ -338,15 +344,11 @@ class UrlImporter:
     ) -> UrlImportOut:
         official_url = choose_official_url(url, page.final_url)
         draft = build_draft(result, fallback_host=_host(official_url) or "the page")
-        candidates = sorted(
-            {normalize_url(url), normalize_url(official_url), normalize_url(page.final_url)}
-        )
+        # The requested URL and the redirect target (the chosen official URL is one of
+        # them): a later import of either one is a duplicate.
+        candidates = sorted({normalize_url(url), normalize_url(page.final_url)})
         with open_conn() as conn, conn.transaction():
-            # Serializes concurrent imports of the same URL; released at commit.
-            conn.execute(
-                "select pg_advisory_xact_lock(hashtext('url_import:' || %s))",
-                (normalize_url(official_url),),
-            )
+            repository.lock_urls(conn, candidates)
             existing = repository.find_event_by_url(conn, candidates)
             if existing is not None:
                 timings["total"] = _ms(started)
@@ -357,6 +359,8 @@ class UrlImporter:
                     event_id=existing["id"],
                     stats=_stats(page=page, result=result, timings=timings, outcome="duplicate"),
                 )
+                # Built inside the transaction: a failure here rolls the run back to
+                # `running`, and the caller then records it as failed.
                 return UrlImportOut(outcome="duplicate", event_id=existing["id"], run=run_out(row))
 
             event = events_service.create_event(
@@ -364,13 +368,17 @@ class UrlImporter:
                 EventCreate.model_validate({**draft.values, "official_url": official_url}),
                 discovered_at=page.fetched_at,
             )
+            # The official event source is the page that was actually read (the final URL
+            # after redirects); after a cross-site redirect it differs from `official_url`.
+            # The duplicate check above matches both.
+            source_url = official_url if _too_long(page.final_url) else page.final_url
             event_source_id = sources_repository.insert_event_source(
                 conn,
                 {
                     "event_id": event["id"],
                     "source_id": repository.manual_source_id(conn),
-                    "url": official_url,
-                    "url_normalized": event["official_url_normalized"],
+                    "url": source_url,
+                    "url_normalized": normalize_url(source_url),
                     "role": "official",
                 },
             )
@@ -402,7 +410,8 @@ class UrlImporter:
                     "llm": result.extracted_by is not None,
                 },
             )
-        return UrlImportOut(outcome="created", event_id=event["id"], run=run_out(row))
+            out = UrlImportOut(outcome="created", event_id=event["id"], run=run_out(row))
+        return out
 
     # --- reads ------------------------------------------------------------------------
 
@@ -442,7 +451,7 @@ def _evidence_rows(
             "field": proposal.field,
             "value_text": value_text(_validated(draft, proposal)),
             "source": proposal.source,
-            "extracted_by": (result.extracted_by or "llm")
+            "extracted_by": _clip(result.extracted_by or "llm", EXTRACTED_BY_MAX)
             if proposal.source == "llm"
             else proposal.source,
             "snippet": _clip(proposal.snippet, SNIPPET_MAX),

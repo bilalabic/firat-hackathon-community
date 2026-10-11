@@ -59,10 +59,15 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
   `GET /imports/runs` (`list_import_runs`), `GET /events/{id}/evidence`
   (`get_event_evidence`, latest run, grouped per field, `matches_current`).
 - `official_url` = the final URL after a same-site redirect (same host ignoring `www.`),
-  else the requested URL; the final URL is in `run.stats`. Duplicates are checked before
-  the fetch (requested URL) and again in the write transaction (requested, final and
-  chosen URL; advisory lock against concurrent imports of the same URL).
-- Event source: role `official`, source "Manual entry" (as in the legacy import).
+  else the requested URL; the final URL is in `run.stats` (omitted when over 500 chars).
+  Duplicates match `events.official_url_normalized` and `event_sources.url_normalized`:
+  before the fetch (requested URL) and again in the write transaction (requested and
+  final URL, one advisory lock per URL in sorted order, so imports sharing either URL
+  serialize).
+- Event source: role `official`, source "Manual entry" (as in the legacy import), URL =
+  the page that was read (final URL). After a cross-site redirect it therefore differs
+  from `events.official_url`; the column meaning ("a URL confirming the event") is
+  unchanged.
 - Values are validated again with the event field rules; cross-field conflicts drop the
   later field (`end_date`, `team_max`, `prize_pool`) with a `rule_violation` flag. Without
   a proposed title the page title is used (`meta` evidence), else "Imported from <host>".

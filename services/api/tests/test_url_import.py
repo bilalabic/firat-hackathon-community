@@ -8,11 +8,14 @@ from datetime import UTC, date, datetime
 from decimal import Decimal
 from typing import Any
 
+import psycopg
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
+from fhc_api.common.normalize import normalize_url
 from fhc_api.db import Conn, get_conn, get_conn_factory
+from fhc_api.importing import repository, service
 from fhc_api.importing.models import (
     ExtractableField,
     ExtractionResult,
@@ -29,7 +32,15 @@ from fhc_api.importing.service import (
     value_text,
 )
 from fhc_api.main import create_app
-from tests.conftest import AUTH, BASE_URL, MARK, FakeUrlChecker, RecordingRevalidator, make_settings
+from tests.conftest import (
+    AUTH,
+    BASE_URL,
+    LOCAL_DATABASE_URL,
+    MARK,
+    FakeUrlChecker,
+    RecordingRevalidator,
+    make_settings,
+)
 from tests.factories import create_event
 
 URL = "https://pytest-import.example.com/hackathon"
@@ -108,14 +119,16 @@ class FakeExtractor:
         return self.result(page)
 
 
-def make_client(app: FastAPI, db: Conn) -> TestClient:
+def make_client(app: FastAPI, db: Conn, *, raise_server_exceptions: bool = True) -> TestClient:
     def conn_in_savepoint() -> Iterator[Conn]:
         with db.transaction():
             yield db
 
     app.dependency_overrides[get_conn] = conn_in_savepoint
     app.dependency_overrides[get_conn_factory] = lambda: contextmanager(conn_in_savepoint)
-    return TestClient(app, base_url=BASE_URL, headers=AUTH)
+    return TestClient(
+        app, base_url=BASE_URL, headers=AUTH, raise_server_exceptions=raise_server_exceptions
+    )
 
 
 @pytest.fixture
@@ -518,3 +531,135 @@ def test_matches_current() -> None:
     assert matches_current("country", "tr", event) is True
     assert matches_current("start_date", "2026-01-03", event) is False
     assert matches_current("city", None, event) is None
+
+
+# --- Review 2: redirect duplicates, transactional failures, column limits -------------
+
+OTHER = "https://pytest-import-other.example.org/event"  # a cross-site redirect target
+
+
+def redirect_to(target: str) -> Callable[[str], PageContent]:
+    return lambda url: make_page(url, final_url=target if url == URL else url)
+
+
+def count(db: Conn, query: str, *params: Any) -> int:
+    row = db.execute(query, params).fetchone()
+    assert row is not None
+    return int(row["n"])
+
+
+def test_redirect_target_is_stored_and_a_later_import_of_it_is_a_duplicate(
+    api: TestClient, db: Conn, loader: FakeLoader
+) -> None:
+    loader.page = redirect_to(OTHER)
+    first = do_import(api)
+    assert first["outcome"] == "created"
+    event_id = first["event_id"]
+    assert api.get(f"/events/{event_id}").json()["official_url"] == URL  # cross-site
+    sources = api.get(f"/events/{event_id}/sources").json()
+    assert [s["url"] for s in sources] == [OTHER]  # the page that was read
+
+    second = do_import(api, OTHER)
+    assert second == {"outcome": "duplicate", "event_id": event_id, "run": None}
+    assert loader.urls == [URL]  # matched before fetching
+    query = "select count(*) as n from app.events where official_url in (%s, %s)"
+    assert count(db, query, URL, OTHER) == 1
+
+
+def test_import_locks_every_candidate_url(api: TestClient, loader: FakeLoader) -> None:
+    loader.page = redirect_to(OTHER)
+    do_import(api)
+    # The test transaction (still open) holds the locks; another session cannot take them.
+    with psycopg.connect(LOCAL_DATABASE_URL, autocommit=True) as other:
+
+        def free(url: str) -> bool:
+            key = repository.lock_key(normalize_url(url))
+            row = other.execute("select pg_try_advisory_lock(hashtext(%s))", (key,)).fetchone()
+            assert row is not None
+            if row[0]:
+                other.execute("select pg_advisory_unlock(hashtext(%s))", (key,))
+            return bool(row[0])
+
+        assert free(URL) is False
+        assert free(OTHER) is False
+        assert free("https://pytest-import-unrelated.example.net/") is True
+
+
+def test_concurrent_import_of_the_redirect_target_is_a_duplicate(
+    api: TestClient, db: Conn, loader: FakeLoader
+) -> None:
+    """Y is imported while an import of X (redirecting to Y) commits in between: the
+    re-check inside the write transaction matches Y in app.event_sources."""
+    racing: dict[str, Any] = {}
+
+    def load(url: str) -> PageContent:
+        event = create_event(api, official_url=URL)
+        db.execute(
+            "insert into app.event_sources (event_id, url, url_normalized, role)"
+            " values (%s, %s, %s, 'official')",
+            (event["id"], OTHER, normalize_url(OTHER)),
+        )
+        racing["id"] = event["id"]
+        return make_page(url)
+
+    loader.page = load
+    body = do_import(api, OTHER)
+    assert body["outcome"] == "duplicate"
+    assert body["event_id"] == racing["id"]
+    assert body["run"]["status"] == "succeeded"
+
+
+def test_write_failure_in_the_transaction_leaves_no_event(
+    importer_app: FastAPI, db: Conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(*_: Any) -> None:
+        raise RuntimeError("evidence insert failed")
+
+    monkeypatch.setattr(repository, "insert_evidence", boom)
+    api = make_client(importer_app, db, raise_server_exceptions=False)
+    assert api.post("/imports/url", json={"url": URL}).status_code == 500
+    assert count(db, "select count(*) as n from app.events where official_url = %s", URL) == 0
+    assert count(db, "select count(*) as n from app.event_sources where url = %s", URL) == 0
+    [run] = runs(db)
+    assert (run["status"], run["error"], run["event_id"]) == (
+        "failed",
+        service.INTERNAL_ERROR,
+        None,
+    )
+
+
+def test_response_building_failure_does_not_leave_a_half_saved_import(
+    importer_app: FastAPI, db: Conn, monkeypatch: pytest.MonkeyPatch
+) -> None:
+    def boom(_: Any) -> None:
+        raise RuntimeError("run_out failed")
+
+    monkeypatch.setattr(service, "run_out", boom)
+    api = make_client(importer_app, db, raise_server_exceptions=False)
+    assert api.post("/imports/url", json={"url": URL}).status_code == 500
+    [run] = runs(db)
+    assert run["status"] == "failed"  # never a committed "succeeded" overwritten afterwards
+    assert count(db, "select count(*) as n from app.events where official_url = %s", URL) == 0
+
+
+def test_long_extracted_by_is_clipped(api: TestClient, extractor: FakeExtractor) -> None:
+    extractor.result = lambda page: replace(full_result(page), extracted_by="llm:" + "m" * 200)
+    body = do_import(api)
+    assert len(body["run"]["stats"]["extracted_by"]) == 100
+    fields = api.get(f"/events/{body['event_id']}/evidence").json()["fields"]
+    city = next(f for f in fields if f["field"] == "city")
+    assert len(city["extracted_by"]) == 100
+
+
+def test_over_length_urls_are_dropped_from_stats(api: TestClient, loader: FakeLoader) -> None:
+    loader.page = lambda url: make_page(
+        url,
+        final_url=URL + "/" + "x" * 600,
+        image_url="https://pytest-import.example.com/" + "i" * 600,
+    )
+    body = do_import(api)
+    stats = body["run"]["stats"]
+    assert "final_url" not in stats
+    assert "image_url" not in stats
+    sources = api.get(f"/events/{body['event_id']}/sources").json()
+    assert [s["url"] for s in sources] == [URL]
