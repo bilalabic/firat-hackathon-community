@@ -411,3 +411,30 @@ Findings from the investigation:
 - Fonts on the critical path went from 4 files (~83 KiB) to 2 files (45 KiB).
 - Next.js classifies `Chrome-Lighthouse` as an HTML-limited bot (`HTML_LIMITED_BOT_UA_RE`): Lighthouse gets the fully rendered response, not the streamed PPR shell. Measured with a normal mobile UA as well: LCP was the same (2.6 s before the font change), so this did not distort the score here. It matters when reading future traces.
 - Remaining headroom, if needed later: about 170 KiB of client JS on the list page (the client-side explorer).
+
+### V1.1a Telegram channel publishing (2026-10-11): done locally, real-channel E2E pending
+
+**Built by subagents (API, then admin UI).**
+- **API** (`/telegram/channel/...`): preview, send, update, delete and history of one channel post per event.
+  - The post is a photo of the public event card (`WEB_BASE_URL/hackathonlar/<slug>/opengraph-image?v=<card hash>`) with a Turkish HTML caption (≤ 1024 visible characters, summary shortened to fit). If Telegram cannot use the card, a text post with a link preview is sent and recorded.
+  - Only published events are posted. Send and Update carry the preview's `content_hash`: a changed event is refused with 409 instead of posting unseen text.
+  - Edit-on-change: the preview reports `changed` when the caption or card differs from the live post; Update edits the caption, and the photo only when the card changed.
+  - Unpublish/archive never deletes a post: the preview reports `not_public` and offers Delete.
+  - Telegram errors map to 502 with an operator-facing sentence; every operation writes one `app.admin_actions` row.
+  - Migration `20261007120000_channel_publishing.sql` (`publications.message_type`, one draft/live post per event). The admin bot offers "Post to channel" / "Update channel post" through the same service.
+- **Admin UI:** a "Telegram channel" section on the event page:
+  - card + caption preview rendered from the API's caption HTML (parsed, never injected), caption length, card and detail URLs;
+  - state notice for: not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / WEB_BASE_URL), event not published, posted, changed since post, sending, live post of a hidden event;
+  - Send / Update / Delete, each confirmed; 409 and 502 shown inline and the page re-rendered;
+  - publication history (time, action, by, outcome, message id, post status) and failed attempts.
+- `schema.ts` regenerated from the local API; `parseErrorResponse` maps 502 to kind `upstream`.
+
+**Checks:**
+- admin lint, typecheck, test (42) and build: pass.
+- Local smoke: the real API against the local DB with an in-memory fake Bot API (`tests/fake_telegram.py`), admin in Playwright. Not configured state, Send, changed after an edit, Update, stale-preview 409, Delete and the history all behaved as expected. Smoke rows deleted and the event summary restored. Nothing was sent to Telegram.
+
+**Remaining:**
+- (owner) Create the public channel and the channel bot (separate from the admin bot), add the bot as channel administrator, and set TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID and WEB_BASE_URL in `services/api/.env`.
+- Apply the migration to the cloud project.
+- **Real-channel E2E (pending):** Settings → Telegram check, then send, edit-on-change, card replacement and delete on a test event; confirm the card is fetched from the production URL and the 48-hour delete limit (TELEGRAM_RESEARCH T-1).
+- In progress: API follow-up for an `uncertain` post state (send timed out or was interrupted) and a resolve endpoint ("not in the channel"). The UI already shows the state; the "Mark as not posted" button is wired after that lands.

@@ -10,6 +10,7 @@ export type ApiErrorKind =
   | "not_found"
   | "conflict"
   | "validation"
+  | "upstream"
   | "unavailable"
   | "server"
 
@@ -114,6 +115,10 @@ export function parseErrorResponse(status: number, body: unknown): ApiError {
       }
       return { ...base, kind: "validation", message: sentence(detail ?? "invalid input") }
     }
+    case 502:
+      // Telegram refused or did not answer. The API's detail is an operator-facing
+      // sentence (what happened and what to check), so it is shown as is.
+      return { ...base, kind: "upstream", message: sentence(detail ?? "an upstream service did not answer") }
     case 503:
       return {
         ...base,

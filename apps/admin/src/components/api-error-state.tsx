@@ -9,6 +9,7 @@ const TITLES: Partial<Record<ApiError["kind"], string>> = {
   config: "Admin is not configured",
   unauthorized: "API token rejected",
   unavailable: "Database unavailable",
+  upstream: "Upstream service failed",
   not_found: "Not found",
 }
 
