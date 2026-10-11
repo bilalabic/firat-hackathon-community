@@ -20,6 +20,7 @@ from fhc_api.admin_bot.settings import (
 )
 from fhc_api.config import Settings
 from fhc_api.db import ConnFactory
+from fhc_api.publishing.service import ChannelPublisher
 from fhc_api.telegram.client import TelegramClient, TelegramConfigError
 from fhc_api.web.revalidate import Revalidator
 
@@ -56,7 +57,9 @@ class AdminBot:
         revalidator: Revalidator,
         *,
         client: TelegramClient | None = None,
+        channel: ChannelPublisher | None = None,
     ) -> None:
+        """`channel`: channel publishing; its offers are sent only when it is configured."""
         self.enabled = is_enabled(settings)
         self.config: AdminBotConfig | None = None
         self.config_error: str | None = None
@@ -74,7 +77,13 @@ class AdminBot:
             self.config_error = "TELEGRAM_ADMIN_BOT_TOKEN has an invalid format"
         else:
             self.config = config
-            self.runner = AdminBotRunner(config, client, open_conn, revalidator)
+            self.runner = AdminBotRunner(
+                config,
+                client,
+                open_conn,
+                revalidator,
+                channel=channel if channel is not None and channel.configured else None,
+            )
             return
         logger.warning("admin bot not started: %s", self.config_error)
 

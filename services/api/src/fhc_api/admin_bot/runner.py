@@ -25,6 +25,7 @@ from fhc_api.admin_bot.handlers import Handlers
 from fhc_api.admin_bot.outbox import Outbox
 from fhc_api.admin_bot.settings import AdminBotConfig
 from fhc_api.db import ConnFactory
+from fhc_api.publishing.service import ChannelPublisher
 from fhc_api.telegram.client import (
     DEFAULT_TIMEOUT_S,
     TelegramAPIError,
@@ -78,6 +79,8 @@ class AdminBotRunner:
         client: TelegramClient,
         open_conn: ConnFactory,
         revalidator: Revalidator,
+        *,
+        channel: ChannelPublisher | None = None,
     ) -> None:
         self._stop = threading.Event()
         self._scan_requested = threading.Event()
@@ -93,6 +96,7 @@ class AdminBotRunner:
             request_scan=self._scan_requested.set,
             sleep=self._stop.wait,
             stopping=self._stop.is_set,
+            channel=channel,
         )
         self._scan_interval_s = config.scan_interval_s
         self._outbox = Outbox(ctx)

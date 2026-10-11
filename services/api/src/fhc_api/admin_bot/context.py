@@ -6,16 +6,23 @@ from collections.abc import Callable
 from dataclasses import dataclass
 from datetime import datetime
 
-from fhc_api.admin_bot.codec import Kind, state_token
+from fhc_api.admin_bot.codec import Kind, channel_token, state_token
 from fhc_api.admin_bot.settings import AdminBotConfig
 from fhc_api.db import ConnFactory
+from fhc_api.publishing.service import ChannelPublisher
 from fhc_api.telegram.client import TelegramAPIError, TelegramClient, TelegramError
 from fhc_api.web.revalidate import Revalidator
 
 logger = logging.getLogger("fhc_api.admin_bot")
 
 # The status a message kind is about; a message is current only while its entity is in it.
-KIND_STATUS: dict[Kind, str] = {"review": "in_review", "publish": "approved", "application": "new"}
+KIND_STATUS: dict[Kind, str] = {
+    "review": "in_review",
+    "publish": "approved",
+    "application": "new",
+    "channel_post": "published",
+    "channel_update": "published",
+}
 
 
 @dataclass(frozen=True)
@@ -31,13 +38,25 @@ class BotContext:
     sleep: Callable[[float], bool]
     # True once shutdown started: loops over Telegram calls stop early.
     stopping: Callable[[], bool]
+    # Channel publishing (V1.1a), only when it is configured: enables the channel offers.
+    channel: ChannelPublisher | None = None
 
 
-def current_token(kind: Kind, status: str | None, updated_at: datetime | None) -> str | None:
+def current_token(
+    kind: Kind, status: str | None, updated_at: datetime | None, channel_marker: str = ""
+) -> str | None:
     """The state token a live message of this kind must carry for the entity as it is
-    now; None when no message of this kind should be live (wrong status or deleted)."""
+    now; None when no message of this kind should be live (wrong status or deleted).
+
+    Channel offers also depend on the event's post (`channel_marker`, empty when there is
+    none): "Post to channel" only while there is no post, "Update channel post" only while
+    there is one."""
     if status != KIND_STATUS[kind] or updated_at is None:
         return None
+    if kind == "channel_post":
+        return None if channel_marker else channel_token(updated_at, channel_marker)
+    if kind == "channel_update":
+        return channel_token(updated_at, channel_marker) if channel_marker else None
     return state_token(updated_at)
 
 

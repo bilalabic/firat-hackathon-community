@@ -300,6 +300,145 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/telegram/channel/posts": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Channel Posts
+         * @description Published events, and unpublished/archived events that still have a post (first).
+         */
+        get: operations["list_channel_posts"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/preview": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** Preview Channel Post */
+        get: operations["preview_channel_post"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/history": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /** List Channel Post History */
+        get: operations["list_channel_post_history"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/send": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Send Channel Post
+         * @description Published events only; refused while a post exists (unless it was deleted).
+         *     502 when Telegram refuses or does not answer (the attempt is recorded as failed).
+         */
+        post: operations["send_channel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/update": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Update Channel Post
+         * @description Edits the caption, and the photo when the card changed (content_version + 1).
+         */
+        post: operations["update_channel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/delete": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Delete Channel Post
+         * @description Also for events that are no longer public. Telegram may refuse posts older than
+         *     48 hours (TELEGRAM_RESEARCH T-1): 502 with instructions, the post stays live.
+         */
+        post: operations["delete_channel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/telegram/channel/events/{event_id}/posts/{publication_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Channel Post
+         * @description For a post in post_state `uncertain` (a send timed out, got an unreadable answer
+         *     or was interrupted): the operator checked the channel and the message is not there
+         *     (or deleted it there by hand). Marks the post failed, so a new send is allowed;
+         *     audited. 409 for any other post. No Bot API call.
+         */
+        post: operations["resolve_channel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin-bot/status": {
         parameters: {
             query?: never;
@@ -375,6 +514,183 @@ export type components = {
              * @enum {string}
              */
             status: "new" | "contacted" | "accepted" | "declined" | "spam";
+        };
+        /** AuditEntry */
+        AuditEntry: {
+            /** Actor */
+            actor: string;
+            /** Action */
+            action: string;
+            /** Detail */
+            detail: {
+                [key: string]: unknown;
+            };
+            /**
+             * At
+             * Format: date-time
+             */
+            at: string;
+        };
+        /** ChannelActionOut */
+        ChannelActionOut: {
+            /**
+             * Outcome
+             * @description sent_as_text: the card could not be fetched, a text post with a link preview was sent; edited_caption_only: the new card could not be fetched, only the caption changed; already_gone: the message no longer existed in the channel; not_in_channel: an uncertain post was resolved as not in the channel
+             * @enum {string}
+             */
+            outcome: "sent" | "sent_as_text" | "edited" | "edited_caption_only" | "unchanged" | "deleted" | "already_gone" | "not_in_channel";
+            /** Message */
+            message: string;
+            publication: components["schemas"]["PublicationOut"];
+        };
+        /** ChannelDeleteIn */
+        ChannelDeleteIn: {
+            /**
+             * Publication Id
+             * Format: uuid
+             * @description The post shown in the preview
+             */
+            publication_id: string;
+        };
+        /** ChannelHistory */
+        ChannelHistory: {
+            /**
+             * Posts
+             * @description Newest first, including failed attempts
+             */
+            posts: components["schemas"]["PublicationOut"][];
+            /**
+             * Actions
+             * @description Telegram audit entries, newest first
+             */
+            actions: components["schemas"]["AuditEntry"][];
+        };
+        /** ChannelPostPage */
+        ChannelPostPage: {
+            /** Items */
+            items: components["schemas"]["ChannelPostSummary"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
+        };
+        /** ChannelPostSummary */
+        ChannelPostSummary: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Slug */
+            slug: string;
+            /** Title */
+            title: string;
+            /**
+             * Event Status
+             * @enum {string}
+             */
+            event_status: "draft" | "in_review" | "approved" | "published" | "archived" | "rejected";
+            /** Start Date */
+            start_date: string | null;
+            /**
+             * Post State
+             * @enum {string}
+             */
+            post_state: "not_posted" | "sending" | "uncertain" | "posted" | "changed" | "not_public";
+            current_post: components["schemas"]["PublicationOut"] | null;
+        };
+        /** ChannelPreview */
+        ChannelPreview: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** Slug */
+            slug: string;
+            /** Title */
+            title: string;
+            /**
+             * Event Status
+             * @enum {string}
+             */
+            event_status: "draft" | "in_review" | "approved" | "published" | "archived" | "rejected";
+            /**
+             * Configured
+             * @description Channel bot, channel and WEB_BASE_URL (https) are set
+             */
+            configured: boolean;
+            /** Config Problem */
+            config_problem: string | null;
+            /**
+             * Caption Html
+             * @description Exactly what is sent (parse_mode HTML)
+             */
+            caption_html: string;
+            /**
+             * Caption Text
+             * @description What readers see (tags removed)
+             */
+            caption_text: string;
+            /**
+             * Caption Length
+             * @description Visible length in UTF-16 units; limit 1024
+             */
+            caption_length: number;
+            /** Caption Truncated */
+            caption_truncated: boolean;
+            /**
+             * Image Url
+             * @description Event card URL; null without WEB_BASE_URL
+             */
+            image_url: string | null;
+            /** Detail Url */
+            detail_url: string | null;
+            /** Content Hash */
+            content_hash: string;
+            /**
+             * Post State
+             * @description not_posted; sending (a send is in progress); uncertain (a send timed out, got an unreadable answer or was interrupted: the message may exist in the channel; check it, then resolve the post before sending again); posted; changed (the caption or card differs from the live post); not_public (posted, but the event is no longer published: delete the post if needed)
+             * @enum {string}
+             */
+            post_state: "not_posted" | "sending" | "uncertain" | "posted" | "changed" | "not_public";
+            /**
+             * Card Changed
+             * @description The live post shows an outdated card
+             */
+            card_changed: boolean;
+            /** @description The draft, uncertain or live post */
+            current_post: components["schemas"]["PublicationOut"] | null;
+            /** Can Send */
+            can_send: boolean;
+            /** Can Update */
+            can_update: boolean;
+            /** Can Delete */
+            can_delete: boolean;
+            /**
+             * Can Resolve
+             * @description post_state is uncertain (see the resolve endpoint)
+             */
+            can_resolve: boolean;
+        };
+        /** ChannelResolveIn */
+        ChannelResolveIn: {
+            /**
+             * Outcome
+             * @description not_in_channel: the operator checked the channel and the message is not there (or was deleted there by hand); the post is marked failed and a new send is allowed
+             * @constant
+             */
+            outcome: "not_in_channel";
+        };
+        /** ChannelSendIn */
+        ChannelSendIn: {
+            /**
+             * Content Hash
+             * @description `content_hash` of the preview being confirmed; a different current hash (the event changed since the preview) is refused with 409
+             */
+            content_hash: string;
         };
         /** CommunityApplicationOut */
         CommunityApplicationOut: {
@@ -861,6 +1177,80 @@ export type components = {
             installed_models?: string[];
             /** Message */
             message: string;
+        };
+        /**
+         * PublicationOut
+         * @description One Telegram message (`app.publications`). Edits update the row in place
+         *     (`content_version` + 1); the audit list keeps one entry per operation.
+         */
+        PublicationOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /**
+             * Platform
+             * @constant
+             */
+            platform: "telegram";
+            /**
+             * Target
+             * @description Channel chat id (numeric once sent)
+             */
+            target: string;
+            /**
+             * External Id
+             * @description Telegram message_id
+             */
+            external_id: string | null;
+            /** Content Hash */
+            content_hash: string;
+            /** Content Version */
+            content_version: number;
+            /**
+             * Body
+             * @description Exact caption/text sent (HTML)
+             */
+            body: string;
+            /**
+             * Image Url
+             * @description Exact card URL sent; null for a text post
+             */
+            image_url: string | null;
+            /** Message Type */
+            message_type: ("photo" | "text") | null;
+            /**
+             * Status
+             * @enum {string}
+             */
+            status: "draft" | "sent" | "edited" | "deleted" | "failed";
+            /**
+             * Uncertain
+             * @description A failed send whose outcome is unknown (timeout, unreadable answer, Telegram server error, interrupted send): the message may exist in the channel; blocks a new send until resolved
+             */
+            uncertain: boolean;
+            /** Sent At */
+            sent_at: string | null;
+            /** Edited At */
+            edited_at: string | null;
+            /** Deleted At */
+            deleted_at: string | null;
+            /**
+             * Error
+             * @description Last error or fallback note (never a token)
+             */
+            error: string | null;
+            /**
+             * Created At
+             * Format: date-time
+             */
+            created_at: string;
         };
         /** ReviewOut */
         ReviewOut: {
@@ -2063,6 +2453,421 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    list_channel_posts: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelPostPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    preview_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelPreview"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    list_channel_post_history: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelHistory"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    send_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelSendIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelActionOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    update_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelSendIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelActionOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    delete_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelDeleteIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelActionOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
+                };
+            };
+            /** @description Bad Gateway */
+            502: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    resolve_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelResolveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelActionOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
                 };
             };
         };

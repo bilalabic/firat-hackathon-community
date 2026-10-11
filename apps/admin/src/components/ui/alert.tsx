@@ -10,6 +10,9 @@ const alertVariants = cva(
         default: "bg-card text-card-foreground",
         destructive:
           "bg-card text-destructive *:data-[slot=alert-description]:text-destructive/90 *:[svg]:text-current",
+        // Not an error: something needs attention (same amber as the review warnings).
+        warning:
+          "border-amber-500/40 bg-amber-500/5 text-amber-700 dark:text-amber-400 *:data-[slot=alert-description]:text-foreground/80 *:[svg]:text-current",
       },
     },
     defaultVariants: {

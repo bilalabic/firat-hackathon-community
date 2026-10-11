@@ -10,7 +10,8 @@ token. To keep it out of errors, reprs and logs:
   `bot<token>` path segments.
 
 The read methods serve the M6 channel check; the update, send and edit methods serve the
-V1.1b admin bot (`fhc_api.admin_bot`).
+V1.1b admin bot (`fhc_api.admin_bot`); the photo, caption, media and delete methods serve
+V1.1a channel publishing (`fhc_api.publishing`).
 """
 
 import logging
@@ -26,6 +27,10 @@ _MAX_DESCRIPTION = 300
 DEFAULT_TIMEOUT_S = 10.0
 # answerCallbackQuery `text`: 0-200 characters (Bot API 10.3).
 ANSWER_TEXT_MAX = 200
+# sendPhoto / editMessageMedia by URL: Telegram downloads the image first (the public site
+# may render the card on demand), so these calls get a longer timeout.
+MEDIA_TIMEOUT_S = 30.0
+_NO_PREVIEW: dict[str, Any] = {"is_disabled": True}
 
 M = TypeVar("M", bound=BaseModel)
 logger = logging.getLogger(__name__)
@@ -280,18 +285,20 @@ class TelegramClient:
 
     def send_message(
         self,
-        chat_id: int,
+        chat_id: int | str,
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
         reply_to_message_id: int | None = None,
+        link_preview_options: dict[str, Any] | None = None,
     ) -> TelegramMessage:
-        """`text` is HTML (every dynamic value escaped by the caller); no link previews."""
+        """`text` is HTML (every dynamic value escaped by the caller). Link previews are
+        disabled unless `link_preview_options` (Bot API `LinkPreviewOptions`) is given."""
         params: dict[str, Any] = {
             "chat_id": chat_id,
             "text": text,
             "parse_mode": "HTML",
-            "link_preview_options": {"is_disabled": True},
+            "link_preview_options": link_preview_options or _NO_PREVIEW,
         }
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
@@ -304,11 +311,12 @@ class TelegramClient:
 
     def edit_message_text(
         self,
-        chat_id: int,
+        chat_id: int | str,
         message_id: int,
         text: str,
         *,
         reply_markup: dict[str, Any] | None = None,
+        link_preview_options: dict[str, Any] | None = None,
     ) -> None:
         """Without `reply_markup` the edited message has no inline keyboard."""
         params: dict[str, Any] = {
@@ -316,7 +324,7 @@ class TelegramClient:
             "message_id": message_id,
             "text": text,
             "parse_mode": "HTML",
-            "link_preview_options": {"is_disabled": True},
+            "link_preview_options": link_preview_options or _NO_PREVIEW,
         }
         if reply_markup is not None:
             params["reply_markup"] = reply_markup
@@ -339,3 +347,47 @@ class TelegramClient:
             raise TelegramResponseError(
                 "Telegram answerCallbackQuery returned an unexpected result."
             )
+
+    # --- channel publishing (V1.1a) ---------------------------------------------------
+
+    def send_photo(self, chat_id: int | str, photo_url: str, *, caption: str) -> TelegramMessage:
+        """`photo_url`: an HTTP(S) URL Telegram downloads (at most 5 MB for photos);
+        `caption` is HTML, 0-1024 characters after entity parsing."""
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "photo": photo_url,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        return self._call("sendPhoto", params, TelegramMessage, timeout_s=MEDIA_TIMEOUT_S)
+
+    def edit_message_caption(self, chat_id: int | str, message_id: int, caption: str) -> None:
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "caption": caption,
+            "parse_mode": "HTML",
+        }
+        self._request("editMessageCaption", params, None)
+
+    def edit_message_media(
+        self, chat_id: int | str, message_id: int, photo_url: str, *, caption: str
+    ) -> None:
+        """Replace the photo (or turn a text message into a photo message) and set the
+        caption in one call (`InputMediaPhoto`)."""
+        params: dict[str, Any] = {
+            "chat_id": chat_id,
+            "message_id": message_id,
+            "media": {
+                "type": "photo",
+                "media": photo_url,
+                "caption": caption,
+                "parse_mode": "HTML",
+            },
+        }
+        self._request("editMessageMedia", params, MEDIA_TIMEOUT_S)
+
+    def delete_message(self, chat_id: int | str, message_id: int) -> None:
+        params: dict[str, Any] = {"chat_id": chat_id, "message_id": message_id}
+        if self._request("deleteMessage", params, None) is not True:
+            raise TelegramResponseError("Telegram deleteMessage returned an unexpected result.")

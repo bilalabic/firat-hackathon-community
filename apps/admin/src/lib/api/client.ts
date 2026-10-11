@@ -169,4 +169,40 @@ export const api = {
   checkTelegram: () => request("telegram_check", "GET", "/telegram/check", { timeoutMs: 45_000 }),
   // Reads in-process state plus two counts; no Telegram call.
   adminBotStatus: () => request("admin_bot_status", "GET", "/admin-bot/status"),
+
+  // Channel publishing (V1.1a). Reads make no Telegram call. Send and update make one or
+  // two Bot API calls: the photo call has httpx Timeout(30), which applies per phase
+  // (connect, write, read), so it can take longer than 30 s; the text fallback
+  // (send_message) uses the default 10 s. Aborting here does not stop the API handler.
+  previewChannelPost: (eventId: string) =>
+    request("preview_channel_post", "GET", `/telegram/channel/events/${seg(eventId)}/preview`),
+  channelPostHistory: (eventId: string) =>
+    request("list_channel_post_history", "GET", `/telegram/channel/events/${seg(eventId)}/history`),
+  sendChannelPost: (eventId: string, body: RequestBody<"send_channel_post">) =>
+    request("send_channel_post", "POST", `/telegram/channel/events/${seg(eventId)}/send`, {
+      body,
+      timeoutMs: 100_000,
+    }),
+  updateChannelPost: (eventId: string, body: RequestBody<"update_channel_post">) =>
+    request("update_channel_post", "POST", `/telegram/channel/events/${seg(eventId)}/update`, {
+      body,
+      timeoutMs: 100_000,
+    }),
+  deleteChannelPost: (eventId: string, body: RequestBody<"delete_channel_post">) =>
+    request("delete_channel_post", "POST", `/telegram/channel/events/${seg(eventId)}/delete`, {
+      body,
+      timeoutMs: 45_000,
+    }),
+  // No Bot API call: the operator checked the channel by hand.
+  resolveChannelPost: (
+    eventId: string,
+    publicationId: string,
+    body: RequestBody<"resolve_channel_post">
+  ) =>
+    request(
+      "resolve_channel_post",
+      "POST",
+      `/telegram/channel/events/${seg(eventId)}/posts/${seg(publicationId)}/resolve`,
+      { body }
+    ),
 }

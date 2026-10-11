@@ -38,6 +38,9 @@ TelegramCheckStatus = Literal[
 
 # Least privilege (SECURITY §6): posting and editing are required for V1.1 publishing.
 # Deleting is only a fallback correction path: its absence is information, not a problem.
+# Bot API 10.3 deleteMessage: a bot with can_post_messages can delete its own channel posts
+# (general limit: sent less than 48 hours ago); with can_delete_messages it "can delete any
+# message there". Whether the 48 h limit applies then is open (TELEGRAM_RESEARCH T-1).
 REQUIRED_CHANNEL_RIGHTS = ("can_post_messages", "can_edit_messages")
 OPTIONAL_CHANNEL_RIGHTS = ("can_delete_messages",)
 # ChatMemberAdministrator rights (Bot API 10.3) that V1 never uses; granting them only
@@ -175,7 +178,10 @@ def run_telegram_check(
 
     notes = []
     if optional:
-        notes.append("Not granted (optional, only needed to delete posts): " + ", ".join(optional))
+        notes.append(
+            "Not granted (optional; may be needed to delete posts older than 48 hours): "
+            + ", ".join(optional)
+        )
     if excess:
         notes.append(
             "Warning: the bot has rights V1 does not need: "

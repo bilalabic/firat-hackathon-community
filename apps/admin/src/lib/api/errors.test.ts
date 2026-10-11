@@ -41,6 +41,12 @@ describe("parseErrorResponse", () => {
     expect(error.message).toContain("ADMIN_API_TOKEN")
   })
 
+  it("keeps the 502 upstream (Telegram) detail as the message", () => {
+    const detail = "Telegram cannot find the channel. Check TELEGRAM_CHANNEL_ID."
+    expect(parseErrorResponse(502, { detail })).toMatchObject({ kind: "upstream", status: 502, message: detail })
+    expect(parseErrorResponse(502, null).message).toBe("An upstream service did not answer.")
+  })
+
   it("maps 503 and unknown statuses", () => {
     expect(parseErrorResponse(503, { detail: "database unavailable" }).kind).toBe("unavailable")
     expect(parseErrorResponse(500, null)).toMatchObject({ kind: "server", message: "The API failed with HTTP 500." })

@@ -33,7 +33,7 @@ import type { EventAction } from "@/lib/api/types"
 import { ACTION_META, needsDialog } from "@/lib/events"
 
 /** The first enabled button inside `element`, else the element itself (if still on the page). */
-function focusableIn(element: HTMLElement | null): HTMLElement | null {
+export function focusableIn(element: HTMLElement | null): HTMLElement | null {
   if (!element?.isConnected) return null
   if (element.matches("button:not(:disabled)")) return element
   return element.querySelector<HTMLElement>("button:not(:disabled)") ?? element

@@ -44,6 +44,11 @@ def unprocessable(detail: str) -> HTTPException:
     return HTTPException(status_code=status.HTTP_422_UNPROCESSABLE_CONTENT, detail=detail)
 
 
+def bad_gateway(detail: str) -> HTTPException:
+    """An upstream service (Telegram) refused or did not answer; `detail` says why."""
+    return HTTPException(status_code=status.HTTP_502_BAD_GATEWAY, detail=detail)
+
+
 def _json(code: int, detail: str) -> JSONResponse:
     return JSONResponse(status_code=code, content={"detail": detail})
 

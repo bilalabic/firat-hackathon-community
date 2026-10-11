@@ -1,6 +1,8 @@
+import { Suspense } from "react"
 import { notFound } from "next/navigation"
 
 import { ApiErrorState } from "@/components/api-error-state"
+import { ChannelPostFallback, ChannelPostSection } from "@/components/channel-post"
 import { EventForm } from "@/components/event-form"
 import { EventSummary } from "@/components/event-summary"
 import { PageBody, Section } from "@/components/page-body"
@@ -43,6 +45,11 @@ export default async function EditEventPage({ params }: PageProps<"/events/[id]"
             initialValues={eventToFormValues(event)}
             submitLabel="Save changes"
           />
+        </Section>
+        <Section>
+          <Suspense fallback={<ChannelPostFallback />}>
+            <ChannelPostSection eventId={event.id} />
+          </Suspense>
         </Section>
       </PageBody>
     </>
