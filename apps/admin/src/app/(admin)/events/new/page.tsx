@@ -1,3 +1,5 @@
+import Link from "next/link"
+
 import { EventForm } from "@/components/event-form"
 import { PageBody, Section } from "@/components/page-body"
 import { SiteHeader } from "@/components/site-header"
@@ -12,7 +14,12 @@ export default function NewEventPage() {
         <Section>
           <p className="mb-4 text-sm text-muted-foreground">
             New events start as drafts. Title and official URL are required now; summary, start
-            date and format are needed before the event can be submitted for review.
+            date and format are needed before the event can be submitted for review. To fill the
+            fields from the event page, use{" "}
+            <Link href="/events/import" className="underline underline-offset-4">
+              Import from URL
+            </Link>
+            .
           </p>
           <EventForm action={createEvent} initialValues={EMPTY_EVENT_VALUES} submitLabel="Create draft" />
         </Section>

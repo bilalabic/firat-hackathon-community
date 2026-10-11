@@ -17,6 +17,9 @@ from fhc_api.community.router import router as community_router
 from fhc_api.config import Settings
 from fhc_api.db import create_pool
 from fhc_api.events.router import router as events_router
+from fhc_api.importing.models import Extractor, PageLoader
+from fhc_api.importing.router import build_import_router
+from fhc_api.importing.service import UrlImporter
 from fhc_api.llm.ollama import OllamaProvider
 from fhc_api.llm.provider import LLMConfigError, LLMProvider, MisconfiguredProvider
 from fhc_api.llm.router import build_llm_router
@@ -62,6 +65,8 @@ def create_app(
     llm_provider: LLMProvider | None = None,
     telegram_client: TelegramClient | None = None,
     admin_bot_client: TelegramClient | None = None,
+    page_loader: PageLoader | None = None,
+    extractor: Extractor | None = None,
 ) -> FastAPI:
     pool = create_pool(settings.DATABASE_URL.get_secret_value())
     # Integration clients are created once per app and closed on shutdown (`closers`).
@@ -88,6 +93,9 @@ def create_app(
         settings, pool.connection, web_revalidator, client=admin_bot_client, channel=publisher
     )
     closers.append(admin_bot.close)
+    # URL import (V1.2). Without a page loader and an extractor the import endpoint answers
+    # 409 `URL import is not available`; the evidence and run reads still work.
+    importer = UrlImporter(page_loader, extractor)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -121,6 +129,7 @@ def create_app(
     app.state.revalidator = web_revalidator
     app.state.admin_bot = admin_bot
     app.state.publisher = publisher
+    app.state.importer = importer
     app.state.url_checker = url_checker or check_url_reachable
 
     # Rejects DNS-rebinding requests (foreign Host header) with 400. No CORS middleware:
@@ -149,6 +158,7 @@ def create_app(
         ),
         build_channel_router(lambda: publisher),
         build_admin_bot_router(lambda: admin_bot),
+        build_import_router(lambda: importer),
     ):
         protected.include_router(router)
 

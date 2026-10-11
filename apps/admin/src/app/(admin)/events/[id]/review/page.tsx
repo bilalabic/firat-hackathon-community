@@ -4,6 +4,7 @@ import { notFound } from "next/navigation"
 import { ApiErrorState } from "@/components/api-error-state"
 import { AddEventSourceForm, RemoveEventSourceButton } from "@/components/event-source-controls"
 import { EventSummary } from "@/components/event-summary"
+import { FieldEvidenceSection } from "@/components/field-evidence"
 import { PageBody, Section } from "@/components/page-body"
 import { ReviewSignals, ReviewSignalsFallback } from "@/components/review-signals"
 import { SiteHeader } from "@/components/site-header"
@@ -143,7 +144,13 @@ export default async function EventReviewPage({ params }: PageProps<"/events/[id
           <EventSummary event={event.data} link="edit" />
         </Section>
         <Section className="grid items-start gap-4 @4xl/main:grid-cols-2">
-          <EventData event={event.data} />
+          <div className="grid gap-4">
+            <EventData event={event.data} />
+            {/* Imported events only (URL import, V1.2); a quick database read. */}
+            <Suspense fallback={null}>
+              <FieldEvidenceSection eventId={id} />
+            </Suspense>
+          </div>
           <div className="grid gap-4">
             <h2 className="sr-only">Evidence</h2>
             <Suspense fallback={<ReviewSignalsFallback />}>
