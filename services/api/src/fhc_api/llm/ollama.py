@@ -1,7 +1,8 @@
 """Ollama provider over the native REST API (https://docs.ollama.com/api).
 
-- `POST /api/chat` with `stream: false`, `think: false`, `options.temperature` and, for structured
-  output, `format` = the Pydantic JSON Schema.
+- `POST /api/chat` with `stream: false`, `think: false`, `options.temperature`, optionally
+  `options.num_ctx` (context window) and, for structured output, `format` = the Pydantic JSON
+  Schema.
 - `GET /api/tags` lists installed models for `health()`.
 
 Configuration is injected through the constructor; this module reads no environment variables.
@@ -99,14 +100,19 @@ class OllamaProvider:
         client: httpx2.Client | None = None,
         *,
         allow_remote: bool = False,
+        num_ctx: int | None = None,
     ) -> None:
         if not model.strip():
             raise LLMConfigError("Ollama model name must not be empty.")
         if timeout_s <= 0:
             raise LLMConfigError("Ollama timeout must be positive.")
+        if num_ctx is not None and num_ctx <= 0:
+            raise LLMConfigError("Ollama num_ctx must be positive.")
         self._base_url = _validated_base_url(base_url, allow_remote=allow_remote)
         self._model = model.strip()
         self._timeout_s = timeout_s
+        # None: the server default (4096 tokens unless OLLAMA_CONTEXT_LENGTH is set).
+        self._num_ctx = num_ctx
         self._owns_client = client is None
         # trust_env=False: never route a local model call through an environment proxy.
         self._client = client or httpx2.Client(trust_env=False, follow_redirects=False)
@@ -182,6 +188,8 @@ class OllamaProvider:
         max_tokens: int | None = None,
     ) -> str:
         options: dict[str, Any] = {"temperature": temperature}
+        if self._num_ctx is not None:
+            options["num_ctx"] = self._num_ctx
         if max_tokens is not None:
             options["num_predict"] = max_tokens
         body: dict[str, Any] = {

@@ -49,7 +49,10 @@ class HealthOut(BaseModel):
 def _build_llm(settings: Settings, closers: list[Callable[[], None]]) -> LLMProvider:
     try:
         ollama = OllamaProvider(
-            settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL, settings.OLLAMA_TIMEOUT_S
+            settings.OLLAMA_BASE_URL,
+            settings.OLLAMA_MODEL,
+            settings.OLLAMA_TIMEOUT_S,
+            num_ctx=settings.OLLAMA_NUM_CTX,
         )
     except LLMConfigError as exc:
         # The API stays up; /llm/check reports the (secret-free) configuration message.

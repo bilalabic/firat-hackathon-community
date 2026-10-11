@@ -66,6 +66,7 @@ def test_settings_defaults_point_at_local_ollama() -> None:
     settings = make_settings()
     assert settings.OLLAMA_BASE_URL == "http://127.0.0.1:11434"
     assert settings.OLLAMA_TIMEOUT_S == 120.0
+    assert settings.OLLAMA_NUM_CTX == 16384
     assert settings.TELEGRAM_BOT_TOKEN is None
 
 

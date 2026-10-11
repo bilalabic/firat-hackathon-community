@@ -87,3 +87,13 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
   UTF-8, then cp1254. No statistical charset detection.
 - `is_free` is set only when every priced offer is 0 or `isAccessibleForFree` is true;
   `application_url` comes only from `offers.url` or a `RegisterAction` target.
+
+## Known limits (part B, deferred)
+
+- Country and currency codes are checked by pattern (`^[A-Z]{2}$`, `^[A-Z]{3}$`) and a small
+  name/symbol map, not against the full ISO 3166 / ISO 4217 lists.
+- A snippet may come from `page.title` as well as the main text (the model sees both).
+- Numeric dates are read as day-month-year (`10.12.2026`) or ISO; US month/day order is not
+  recognized.
+- The extraction schema sent to Ollama uses `$defs`/`$ref`; not inlined, not yet checked with
+  every candidate model.
