@@ -7,8 +7,8 @@ Checked 2026-09-27. This document informs V1.2–V1.4. **No crawler is built in 
 | Tool | Status (verified) | Role |
 |---|---|---|
 | `httpx2` 2.13.1 | Successor to `httpx` (pydantic org), recommended by Starlette 1.7 (D-20) | All HTTP retrieval, with timeouts, size caps and redirect limits |
-| `selectolax` 0.4.12 (2026-09-18) | MIT (Lexbor engine Apache-2.0), Windows wheels, Python 3.9–3.14 | Fast parsing: `<script type="application/ld+json">`, `<meta>`, links |
-| `trafilatura` 2.2.0 (2026-07-31) | Apache 2.0 (since 1.8), Python ≥ 3.10, Markdown output + metadata | Main-content text for LLM input |
+| `selectolax` 1.0.0 (2026-10-03; added in V1.2) | MIT (Lexbor engine Apache-2.0), Windows wheels, Python 3.9–3.15. We use the Lexbor backend (`selectolax.lexbor`) | Fast parsing: `<script type="application/ld+json">`, `<meta>`, links |
+| `trafilatura` 2.3.1 (2026-10-06; added in V1.2) | Apache 2.0 (since 1.8), Python ≥ 3.10, Markdown output + metadata. Transitive (checked 2026-10-11): lxml, lxml-html-clean, babel, dateparser (BSD-3), justext (BSD-2), courlan, htmldate, regex, tzdata (Apache-2.0), charset-normalizer, urllib3, pytz, six, tzlocal (MIT), certifi (MPL-2.0), tld (MPL-1.1 / GPL-2.0 / LGPL-2.1, used under MPL-1.1): all compatible with distribution, none copyleft-only | Main-content text for LLM input |
 | Playwright (Python) | Mature | Fallback for JS-rendered pages only, enabled per source |
 | Crawl4AI 0.9.x | Browser-first (installs Playwright browsers via `crawl4ai-setup`), "undetected" modes | **Not used.** It adds nothing over the tools above, and stealth modes conflict with our "respect the source" rule |
 | `feedparser` | Mature | Only if a source offers RSS/Atom |

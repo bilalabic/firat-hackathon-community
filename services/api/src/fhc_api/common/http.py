@@ -88,6 +88,10 @@ class BlockedUrlError(FetchError):
     """The URL or one of its resolved addresses is not allowed."""
 
 
+class ContentTypeError(FetchError):
+    """The response content type is not in the allow-list."""
+
+
 @dataclass(frozen=True)
 class FetchResult:
     url: str  # final URL after redirects
@@ -95,6 +99,7 @@ class FetchResult:
     content_type: str
     body: bytes
     redirects: int
+    charset: str | None = None  # from the Content-Type header, if declared
 
 
 def system_resolver(host: str, port: int) -> list[str]:
@@ -174,10 +179,17 @@ class SafeFetcher:
         self._transport = transport  # tests pass httpx2.MockTransport
         self._max_body_bytes = max_body_bytes
 
-    def fetch(self, url: str, *, read_body: bool = True) -> FetchResult:
+    def fetch(
+        self,
+        url: str,
+        *,
+        read_body: bool = True,
+        content_types: frozenset[str] | None = None,
+    ) -> FetchResult:
         """GET `url` following at most MAX_REDIRECTS checked redirects.
 
         With `read_body=False` only the status line and headers are read (reachability).
+        `content_types` narrows the allow-list for the body (e.g. HTML only for imports).
         """
         current = check_url(url)
         with httpx2.Client(
@@ -203,7 +215,13 @@ class SafeFetcher:
                         # RemoteProtocolError in `send` above.
                         current = check_url(current.join(location))
                         continue
-                    return self._result(response, current, redirects, read_body=read_body)
+                    return self._result(
+                        response,
+                        current,
+                        redirects,
+                        read_body=read_body,
+                        content_types=content_types,
+                    )
                 finally:
                     response.close()
         raise FetchError(f"more than {MAX_REDIRECTS} redirects")
@@ -220,13 +238,24 @@ class SafeFetcher:
         )
 
     def _result(
-        self, response: httpx2.Response, url: httpx2.URL, redirects: int, *, read_body: bool
+        self,
+        response: httpx2.Response,
+        url: httpx2.URL,
+        redirects: int,
+        *,
+        read_body: bool,
+        content_types: frozenset[str] | None,
     ) -> FetchResult:
         content_type = _content_type(response)
         body = b""
         if read_body:  # the allow-list guards what we ingest; headers alone are harmless
-            if not _allowed_content_type(content_type):
-                raise FetchError(f"content type {content_type or '(none)'!r} is not allowed")
+            allowed = (
+                content_type in content_types
+                if content_types is not None
+                else _allowed_content_type(content_type)
+            )
+            if not allowed:
+                raise ContentTypeError(f"content type {content_type or '(none)'!r} is not allowed")
             body = self._read_capped(response)
         return FetchResult(
             url=str(url),
@@ -234,6 +263,7 @@ class SafeFetcher:
             content_type=content_type,
             body=body,
             redirects=redirects,
+            charset=response.charset_encoding,
         )
 
     def _read_capped(self, response: httpx2.Response) -> bytes:
