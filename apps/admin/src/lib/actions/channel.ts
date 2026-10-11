@@ -17,7 +17,7 @@ const uuid = z.uuid()
 const contentHash = z.string().regex(/^[0-9a-f]{64}$/)
 
 const postInput = z.object({ eventId: uuid, contentHash })
-const deleteInput = z.object({ eventId: uuid, publicationId: uuid })
+const publicationInput = z.object({ eventId: uuid, publicationId: uuid })
 
 function settle(result: ApiResult<ChannelActionOut>): ActionResult {
   if (!result.ok) {
@@ -45,8 +45,16 @@ export async function updateChannelPost(input: { eventId: string; contentHash: s
 }
 
 export async function deleteChannelPost(input: { eventId: string; publicationId: string }): Promise<ActionResult> {
-  const parsed = deleteInput.safeParse(input)
+  const parsed = publicationInput.safeParse(input)
   if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
   const { eventId, publicationId } = parsed.data
   return settle(await api.deleteChannelPost(eventId, { publication_id: publicationId }))
+}
+
+/** The operator checked the channel: the uncertain send is not there, so allow a new send. */
+export async function resolveChannelPost(input: { eventId: string; publicationId: string }): Promise<ActionResult> {
+  const parsed = publicationInput.safeParse(input)
+  if (!parsed.success) return { ok: false, message: "Invalid channel post request." }
+  const { eventId, publicationId } = parsed.data
+  return settle(await api.resolveChannelPost(eventId, publicationId, { outcome: "not_in_channel" }))
 }

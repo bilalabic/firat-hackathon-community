@@ -421,20 +421,26 @@ Findings from the investigation:
   - Edit-on-change: the preview reports `changed` when the caption or card differs from the live post; Update edits the caption, and the photo only when the card changed.
   - Unpublish/archive never deletes a post: the preview reports `not_public` and offers Delete.
   - Telegram errors map to 502 with an operator-facing sentence; every operation writes one `app.admin_actions` row.
-  - Migration `20261007120000_channel_publishing.sql` (`publications.message_type`, one draft/live post per event). The admin bot offers "Post to channel" / "Update channel post" through the same service.
+  - Ambiguous send failures (timeout, unreadable answer, Telegram 5xx, interrupted send) are `uncertain`: the message may be in the channel, so a new send is blocked until the operator checks the channel and resolves the post (`POST .../posts/{id}/resolve`, outcome `not_in_channel`).
+  - Concurrent updates are refused with 409 (the edit is claimed before the Bot API call).
+  - Migration `20261007120000_channel_publishing.sql` (`publications.message_type`, `uncertain`, `updating_since`, one draft/uncertain/live post per event). The admin bot offers "Post to channel" / "Update channel post" through the same service.
 - **Admin UI:** a "Telegram channel" section on the event page:
   - card + caption preview rendered from the API's caption HTML (parsed, never injected), caption length, card and detail URLs;
-  - state notice for: not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / WEB_BASE_URL), event not published, posted, changed since post, sending, live post of a hidden event;
-  - Send / Update / Delete, each confirmed; 409 and 502 shown inline and the page re-rendered;
-  - publication history (time, action, by, outcome, message id, post status) and failed attempts.
+  - state notice for: not configured (TELEGRAM_BOT_TOKEN / TELEGRAM_CHANNEL_ID / WEB_BASE_URL), event not published, posted, changed since post, sending, uncertain, live post of a hidden event; unknown states are shown as is. Notices use a new amber `warning` Alert variant; red stays for real errors;
+  - Send / Update / Delete / Mark as not posted (resolve), each confirmed; 409 and 502 shown inline and the page re-rendered;
+  - publication history (time, action, by, outcome, message id, post status) and failed or uncertain attempts.
 - `schema.ts` regenerated from the local API; `parseErrorResponse` maps 502 to kind `upstream`.
 
 **Checks:**
-- admin lint, typecheck, test (42) and build: pass.
-- Local smoke: the real API against the local DB with an in-memory fake Bot API (`tests/fake_telegram.py`), admin in Playwright. Not configured state, Send, changed after an edit, Update, stale-preview 409, Delete and the history all behaved as expected. Smoke rows deleted and the event summary restored. Nothing was sent to Telegram.
+- admin lint, typecheck, test (45) and build: pass.
+- Local smoke: the real API against the local DB with an in-memory fake Bot API (`tests/fake_telegram.py`), admin in Playwright. All of these behaved as expected:
+  - not configured state;
+  - Send, then changed after an edit, Update, stale-preview 409 and Delete;
+  - a timed-out sendPhoto (fake hook) → Uncertain, then Mark as not posted → Not posted, then a new send → Posted;
+  - the history for each step.
+- Smoke rows deleted and the event summary restored. Nothing was sent to Telegram.
 
 **Remaining:**
 - (owner) Create the public channel and the channel bot (separate from the admin bot), add the bot as channel administrator, and set TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID and WEB_BASE_URL in `services/api/.env`.
 - Apply the migration to the cloud project.
 - **Real-channel E2E (pending):** Settings → Telegram check, then send, edit-on-change, card replacement and delete on a test event; confirm the card is fetched from the production URL and the 48-hour delete limit (TELEGRAM_RESEARCH T-1).
-- In progress: API follow-up for an `uncertain` post state (send timed out or was interrupted) and a resolve endpoint ("not in the channel"). The UI already shows the state; the "Mark as not posted" button is wired after that lands.

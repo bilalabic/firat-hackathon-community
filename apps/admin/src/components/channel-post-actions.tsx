@@ -1,8 +1,9 @@
 "use client"
 
-// Send / Update / Delete for an event's channel post. Only the actions the API offers
-// (`can_send`, `can_update`, `can_delete`) are enabled; each one is confirmed first,
-// because it is public (send, update) or destructive (delete).
+// Send / Update / Delete / Mark as not posted for an event's channel post. Only the
+// actions the API offers (`can_send`, `can_update`, `can_delete`, `can_resolve`) are
+// shown; each one is confirmed first, because it is public (send, update), destructive
+// (delete) or allows a second post (resolve).
 
 import { useEffect, useRef, useState, useTransition } from "react"
 import { CircleAlertIcon } from "lucide-react"
@@ -20,7 +21,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog"
 import { Button } from "@/components/ui/button"
-import { deleteChannelPost, sendChannelPost, updateChannelPost } from "@/lib/actions/channel"
+import {
+  deleteChannelPost,
+  resolveChannelPost,
+  sendChannelPost,
+  updateChannelPost,
+} from "@/lib/actions/channel"
 import { channelActionMeta, type ChannelAction } from "@/lib/channel"
 import type { ActionResult } from "@/lib/form-state"
 
@@ -36,7 +42,7 @@ export function ChannelPostActions({
   eventTitle: string
   /** `content_hash` of the preview on screen; the API refuses the post if it changed. */
   contentHash: string
-  /** The draft or live post (Delete applies to it). */
+  /** The draft, uncertain or live post (Delete and resolve apply to it). */
   publicationId: string | null
   cardChanged: boolean
   allowed: Record<ChannelAction, boolean>
@@ -64,10 +70,11 @@ export function ChannelPostActions({
   const run = (action: ChannelAction) =>
     startTransition(async () => {
       let result: ActionResult
-      if (action === "delete") {
+      if (action === "delete" || action === "resolve") {
+        const act = action === "delete" ? deleteChannelPost : resolveChannelPost
         result = publicationId
-          ? await deleteChannelPost({ eventId, publicationId })
-          : { ok: false, message: "There is no post to delete." }
+          ? await act({ eventId, publicationId })
+          : { ok: false, message: "There is no post for this action." }
       } else {
         const send = action === "send" ? sendChannelPost : updateChannelPost
         result = await send({ eventId, contentHash })
@@ -81,7 +88,7 @@ export function ChannelPostActions({
       }
     })
 
-  const actions: ChannelAction[] = ["send", "update", "delete"]
+  const actions: ChannelAction[] = ["resolve", "send", "update", "delete"]
   const offered = actions.filter((action) => allowed[action])
   const meta = shown ? channelActionMeta(shown, cardChanged) : null
 
@@ -104,7 +111,7 @@ export function ChannelPostActions({
             <Button
               key={action}
               size="sm"
-              variant={destructive ? "destructive" : "default"}
+              variant={destructive ? "destructive" : action === "resolve" ? "outline" : "default"}
               disabled={pending}
               onClick={(event) => {
                 openerRef.current = event.currentTarget

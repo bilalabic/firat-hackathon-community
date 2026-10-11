@@ -2,7 +2,7 @@
 // the API would send them, the current post, Send / Update / Delete, and the history.
 // Reads make no Telegram call, so the section streams in quickly.
 
-import { CircleAlertIcon, InfoIcon } from "lucide-react"
+import { InfoIcon, TriangleAlertIcon } from "lucide-react"
 
 import { ApiErrorState } from "@/components/api-error-state"
 import { ChannelPostActions } from "@/components/channel-post-actions"
@@ -16,11 +16,11 @@ import { api } from "@/lib/api/client"
 import type { ChannelHistory, ChannelPreview, Publication } from "@/lib/api/types"
 import {
   CAPTION_LIMIT,
-  PUBLICATION_STATUS_LABELS,
   channelNotice,
   historyRows,
   parseCaptionHtml,
   postStateMeta,
+  publicationStatusLabel,
   type CaptionNode,
 } from "@/lib/channel"
 import { formatDateTime } from "@/lib/format"
@@ -106,7 +106,7 @@ function PostPreview({ preview }: { preview: ChannelPreview }) {
 function CurrentPost({ post, preview }: { post: Publication; preview: ChannelPreview }) {
   const items: [string, React.ReactNode][] = [
     ["Message id", post.external_id ?? "—"],
-    ["Status", PUBLICATION_STATUS_LABELS[post.status]],
+    ["Status", publicationStatusLabel(post)],
     ["Type", post.message_type === "text" ? "Text with link preview (card fallback)" : post.message_type === "photo" ? "Photo with caption" : "—"],
     ["Version", String(post.content_version)],
     ["Sent", formatDateTime(post.sent_at)],
@@ -169,7 +169,7 @@ function History({ history }: { history: ChannelHistory }) {
             .filter((post) => post.status === "failed" && post.error)
             .map((post) => (
               <li key={post.id}>
-                Failed attempt ({formatDateTime(post.created_at)}): {post.error}
+                {post.uncertain ? "Uncertain attempt" : "Failed attempt"} ({formatDateTime(post.created_at)}): {post.error}
               </li>
             ))}
         </ul>
@@ -223,8 +223,8 @@ export async function ChannelPostSection({ eventId }: { eventId: string }) {
   const post = preview.current_post
   return (
     <SectionCard preview={preview}>
-      <Alert variant={notice.tone === "warning" ? "destructive" : "default"}>
-        {notice.tone === "warning" ? <CircleAlertIcon /> : <InfoIcon />}
+      <Alert variant={notice.tone === "warning" ? "warning" : "default"}>
+        {notice.tone === "warning" ? <TriangleAlertIcon /> : <InfoIcon />}
         <AlertTitle>{notice.title}</AlertTitle>
         <AlertDescription>{notice.text}</AlertDescription>
       </Alert>
@@ -248,7 +248,12 @@ export async function ChannelPostSection({ eventId }: { eventId: string }) {
             contentHash={preview.content_hash}
             publicationId={post?.id ?? null}
             cardChanged={preview.card_changed}
-            allowed={{ send: preview.can_send, update: preview.can_update, delete: preview.can_delete }}
+            allowed={{
+              send: preview.can_send,
+              update: preview.can_update,
+              delete: preview.can_delete,
+              resolve: preview.can_resolve,
+            }}
           />
         </div>
       </div>

@@ -10,6 +10,7 @@ import {
   historyRows,
   parseCaptionHtml,
   postStateMeta,
+  publicationStatusLabel,
 } from "./channel"
 
 const POST: Publication = {
@@ -24,6 +25,7 @@ const POST: Publication = {
   image_url: "https://example.org/hackathonlar/x/opengraph-image?v=1",
   message_type: "photo",
   status: "edited",
+  uncertain: false,
   sent_at: "2026-10-07T10:00:00Z",
   edited_at: "2026-10-07T11:00:00Z",
   deleted_at: null,
@@ -52,6 +54,7 @@ function preview(overrides: Partial<ChannelPreview> = {}): ChannelPreview {
     can_send: true,
     can_update: false,
     can_delete: false,
+    can_resolve: false,
     ...overrides,
   }
 }
@@ -108,7 +111,7 @@ describe("channelNotice", () => {
   })
 
   it("handles the uncertain state and unknown states defensively", () => {
-    const uncertain = preview({ post_state: "uncertain" as ChannelPreview["post_state"] })
+    const uncertain = preview({ post_state: "uncertain", can_resolve: true })
     expect(channelNotice(uncertain).text).toMatch(/may already be in the channel/)
     const unknown = preview({ post_state: "later" as ChannelPreview["post_state"] })
     expect(channelNotice(unknown).title).toBe("Unknown post state: later")
@@ -122,6 +125,18 @@ describe("channel actions", () => {
     expect(channelActionMeta("update", true).confirm).toMatch(/card image is replaced/)
     expect(channelActionMeta("update", false).confirm).toMatch(/stays the same/)
     expect(channelActionMeta("delete").destructive).toBe(true)
+    expect(channelActionMeta("resolve").label).toBe("Mark as not posted")
+    expect(channelActionMeta("resolve").confirm).toMatch(/after checking the channel/)
+  })
+
+  it("labels an uncertain failed send apart from a plain failure", () => {
+    expect(publicationStatusLabel({ status: "failed", uncertain: true })).toBe("Failed, outcome unknown")
+    expect(publicationStatusLabel({ status: "failed", uncertain: false })).toBe("Failed")
+  })
+
+  it("mentions resolving when the channel is not configured", () => {
+    const notice = channelNotice(preview({ configured: false, config_problem: "x.", post_state: "uncertain", can_resolve: true }))
+    expect(notice.text).toMatch(/marked as not posted/)
   })
 })
 
@@ -149,6 +164,24 @@ describe("historyRows", () => {
         postStatus: "Edited",
       },
       { at: "2026-10-07T09:00:00Z", action: "Send", actor: "Admin UI", outcome: "Failed", messageId: null, postStatus: null },
+    ])
+  })
+
+  it("labels resolve and the error outcomes", () => {
+    const history: ChannelHistory = {
+      posts: [{ ...POST, status: "failed", uncertain: false, external_id: null }],
+      actions: [
+        { actor: "admin_ui", action: "telegram_resolve", detail: { publication_id: POST.id, outcome: "not_in_channel" }, at: "2026-10-07T12:00:00Z" },
+        { actor: "admin_ui", action: "telegram_post", detail: { publication_id: POST.id, outcome: "uncertain" }, at: "2026-10-07T11:00:00Z" },
+        { actor: "admin_ui", action: "telegram_update", detail: { outcome: "conflict" }, at: "2026-10-07T10:00:00Z" },
+        { actor: "admin_ui", action: "telegram_post", detail: { outcome: "interrupted" }, at: "2026-10-07T09:00:00Z" },
+      ],
+    }
+    expect(historyRows(history).map((row) => [row.action, row.outcome, row.postStatus])).toEqual([
+      ["Resolve", "Marked as not in the channel", "Failed"],
+      ["Send", "Outcome unknown (may be in the channel)", "Failed"],
+      ["Update", "Refused: the post changed meanwhile", null],
+      ["Send", "Interrupted send retired", null],
     ])
   })
 

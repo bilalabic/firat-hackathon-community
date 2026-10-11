@@ -191,4 +191,16 @@ export const api = {
       body,
       timeoutMs: 45_000,
     }),
+  // No Bot API call: the operator checked the channel by hand.
+  resolveChannelPost: (
+    eventId: string,
+    publicationId: string,
+    body: RequestBody<"resolve_channel_post">
+  ) =>
+    request(
+      "resolve_channel_post",
+      "POST",
+      `/telegram/channel/events/${seg(eventId)}/posts/${seg(publicationId)}/resolve`,
+      { body }
+    ),
 }

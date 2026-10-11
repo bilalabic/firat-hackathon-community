@@ -1,7 +1,7 @@
 // Labels and pure helpers for Telegram channel publishing (V1.1a). Which actions are
-// possible always comes from the API (`can_send`, `can_update`, `can_delete`); this file
-// only describes how states and actions are presented. Type-only imports: safe to use
-// from Client Components.
+// possible always comes from the API (`can_send`, `can_update`, `can_delete`,
+// `can_resolve`); this file only describes how states and actions are presented.
+// Type-only imports: safe to use from Client Components.
 
 import type {
   ChannelHistory,
@@ -16,21 +16,18 @@ export const CAPTION_LIMIT = 1024
 
 type BadgeVariant = "default" | "secondary" | "outline" | "destructive"
 
-// "uncertain" (a send that timed out or was interrupted) is announced by the API but not
-// in the generated schema yet; any other unknown value is shown as is.
-type KnownPostState = PostState | "uncertain"
-
-const POST_STATE_META: Record<KnownPostState, { label: string; variant: BadgeVariant }> = {
+const POST_STATE_META: Record<PostState, { label: string; variant: BadgeVariant }> = {
   not_posted: { label: "Not posted", variant: "outline" },
   sending: { label: "Sending", variant: "secondary" },
+  uncertain: { label: "Uncertain", variant: "destructive" },
   posted: { label: "Posted", variant: "default" },
   changed: { label: "Changed since post", variant: "secondary" },
   not_public: { label: "Live, event not public", variant: "destructive" },
-  uncertain: { label: "Uncertain", variant: "destructive" },
 }
 
+/** A state this admin does not know yet (a newer API) is shown as is. */
 export function postStateMeta(state: string): { label: string; variant: BadgeVariant } {
-  return POST_STATE_META[state as KnownPostState] ?? { label: state, variant: "outline" }
+  return POST_STATE_META[state as PostState] ?? { label: state, variant: "outline" }
 }
 
 export const PUBLICATION_STATUS_LABELS: Record<PublicationStatus, string> = {
@@ -41,7 +38,12 @@ export const PUBLICATION_STATUS_LABELS: Record<PublicationStatus, string> = {
   failed: "Failed",
 }
 
-export type ChannelAction = "send" | "update" | "delete"
+/** An uncertain send is failed, but the message may be in the channel. */
+export function publicationStatusLabel(post: Pick<Publication, "status" | "uncertain">): string {
+  return post.uncertain ? "Failed, outcome unknown" : PUBLICATION_STATUS_LABELS[post.status]
+}
+
+export type ChannelAction = "send" | "update" | "delete" | "resolve"
 
 export type ChannelActionMeta = {
   label: string
@@ -72,6 +74,12 @@ export function channelActionMeta(action: ChannelAction, cardChanged = false): C
           "The post is deleted from the Telegram channel for everyone. Telegram may refuse posts older than 48 hours; the error then says what to do.",
         destructive: true,
       }
+    case "resolve":
+      return {
+        label: "Mark as not posted",
+        confirm:
+          "Confirm only after checking the channel: the message is not there (or you deleted it there by hand). The attempt is recorded as failed and the event can be sent again. If the message is in the channel, a new send would post it twice.",
+      }
   }
 }
 
@@ -80,18 +88,23 @@ const AUDIT_ACTION_LABELS: Record<string, string> = {
   telegram_post: "Send",
   telegram_update: "Update",
   telegram_delete: "Delete",
+  telegram_resolve: "Resolve",
 }
 
-/** Audit `detail.outcome` values (ChannelActionOut outcomes plus "failed"). */
+/** Audit `detail.outcome` values: ChannelActionOut outcomes plus the error outcomes. */
 const OUTCOME_LABELS: Record<string, string> = {
   sent: "Sent",
   sent_as_text: "Sent as text (card fallback)",
   edited: "Edited",
   edited_caption_only: "Caption edited, card kept",
-  unchanged: "Unchanged",
+  unchanged: "Unchanged (already up to date)",
   deleted: "Deleted",
   already_gone: "Already gone from the channel",
+  not_in_channel: "Marked as not in the channel",
   failed: "Failed",
+  uncertain: "Outcome unknown (may be in the channel)",
+  interrupted: "Interrupted send retired",
+  conflict: "Refused: the post changed meanwhile",
 }
 
 export function actorLabel(actor: string): string {
@@ -105,7 +118,11 @@ export type Notice = { tone: "info" | "warning"; title: string; text: string }
 /** The one sentence that explains the current state and what can be done next. */
 export function channelNotice(preview: ChannelPreview): Notice {
   if (!preview.configured) {
-    const deletable = preview.can_delete ? " The existing post can still be deleted." : ""
+    const deletable = preview.can_delete
+      ? " The existing post can still be deleted."
+      : preview.can_resolve
+        ? " The uncertain send can still be marked as not posted."
+        : ""
     return {
       tone: "warning",
       title: "Channel publishing is not configured",
@@ -148,7 +165,7 @@ export function channelNotice(preview: ChannelPreview): Notice {
       return {
         tone: "warning",
         title: "The last send may have reached the channel",
-        text: "Sending timed out or was interrupted, so the message may already be in the channel. Check the channel; if it is not there, mark it as not posted to allow a new send.",
+        text: "Sending timed out, got an unreadable answer or was interrupted, so the message may already be in the channel. Check the channel; if it is not there, mark it as not posted to allow a new send.",
       }
     default:
       return {
@@ -183,7 +200,7 @@ export function historyRows(history: ChannelHistory): HistoryRow[] {
       actor: actorLabel(entry.actor),
       outcome: outcome ? (OUTCOME_LABELS[outcome] ?? outcome) : "—",
       messageId: post?.external_id ?? null,
-      postStatus: post ? PUBLICATION_STATUS_LABELS[post.status] : null,
+      postStatus: post ? publicationStatusLabel(post) : null,
     }
   })
 }

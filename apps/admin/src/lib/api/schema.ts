@@ -416,6 +416,29 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/telegram/channel/events/{event_id}/posts/{publication_id}/resolve": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Resolve Channel Post
+         * @description For a post in post_state `uncertain` (a send timed out, got an unreadable answer
+         *     or was interrupted): the operator checked the channel and the message is not there
+         *     (or deleted it there by hand). Marks the post failed, so a new send is allowed;
+         *     audited. 409 for any other post. No Bot API call.
+         */
+        post: operations["resolve_channel_post"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
     "/admin-bot/status": {
         parameters: {
             query?: never;
@@ -512,10 +535,10 @@ export type components = {
         ChannelActionOut: {
             /**
              * Outcome
-             * @description sent_as_text: the card could not be fetched, a text post with a link preview was sent; edited_caption_only: the new card could not be fetched, only the caption changed; already_gone: the message no longer existed in the channel
+             * @description sent_as_text: the card could not be fetched, a text post with a link preview was sent; edited_caption_only: the new card could not be fetched, only the caption changed; already_gone: the message no longer existed in the channel; not_in_channel: an uncertain post was resolved as not in the channel
              * @enum {string}
              */
-            outcome: "sent" | "sent_as_text" | "edited" | "edited_caption_only" | "unchanged" | "deleted" | "already_gone";
+            outcome: "sent" | "sent_as_text" | "edited" | "edited_caption_only" | "unchanged" | "deleted" | "already_gone" | "not_in_channel";
             /** Message */
             message: string;
             publication: components["schemas"]["PublicationOut"];
@@ -575,7 +598,7 @@ export type components = {
              * Post State
              * @enum {string}
              */
-            post_state: "not_posted" | "sending" | "posted" | "changed" | "not_public";
+            post_state: "not_posted" | "sending" | "uncertain" | "posted" | "changed" | "not_public";
             current_post: components["schemas"]["PublicationOut"] | null;
         };
         /** ChannelPreview */
@@ -629,16 +652,16 @@ export type components = {
             content_hash: string;
             /**
              * Post State
-             * @description not_posted; sending (a send is in progress); posted; changed (the caption or card differs from the live post); not_public (posted, but the event is no longer published: delete the post if needed)
+             * @description not_posted; sending (a send is in progress); uncertain (a send timed out, got an unreadable answer or was interrupted: the message may exist in the channel; check it, then resolve the post before sending again); posted; changed (the caption or card differs from the live post); not_public (posted, but the event is no longer published: delete the post if needed)
              * @enum {string}
              */
-            post_state: "not_posted" | "sending" | "posted" | "changed" | "not_public";
+            post_state: "not_posted" | "sending" | "uncertain" | "posted" | "changed" | "not_public";
             /**
              * Card Changed
              * @description The live post shows an outdated card
              */
             card_changed: boolean;
-            /** @description The draft or live post */
+            /** @description The draft, uncertain or live post */
             current_post: components["schemas"]["PublicationOut"] | null;
             /** Can Send */
             can_send: boolean;
@@ -646,6 +669,20 @@ export type components = {
             can_update: boolean;
             /** Can Delete */
             can_delete: boolean;
+            /**
+             * Can Resolve
+             * @description post_state is uncertain (see the resolve endpoint)
+             */
+            can_resolve: boolean;
+        };
+        /** ChannelResolveIn */
+        ChannelResolveIn: {
+            /**
+             * Outcome
+             * @description not_in_channel: the operator checked the channel and the message is not there (or was deleted there by hand); the post is marked failed and a new send is allowed
+             * @constant
+             */
+            outcome: "not_in_channel";
         };
         /** ChannelSendIn */
         ChannelSendIn: {
@@ -1193,6 +1230,11 @@ export type components = {
              * @enum {string}
              */
             status: "draft" | "sent" | "edited" | "deleted" | "failed";
+            /**
+             * Uncertain
+             * @description A failed send whose outcome is unknown (timeout, unreadable answer, Telegram server error, interrupted send): the message may exist in the channel; blocks a new send until resolved
+             */
+            uncertain: boolean;
             /** Sent At */
             sent_at: string | null;
             /** Edited At */
@@ -2763,6 +2805,69 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    resolve_channel_post: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+                publication_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["ChannelResolveIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ChannelActionOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
                 };
             };
         };
