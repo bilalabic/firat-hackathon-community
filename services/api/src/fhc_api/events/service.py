@@ -154,11 +154,16 @@ def _verified_at(values: Mapping[str, Any], current: Mapping[str, Any]) -> dict[
     return {"verified_at": datetime.now(UTC) if new == "verified" else None}
 
 
-def create_event(conn: Conn, data: EventCreate) -> DictRow:
+def create_event(
+    conn: Conn, data: EventCreate, *, discovered_at: datetime | None = None
+) -> DictRow:
+    """`discovered_at`: when an import found the event (URL import, V1.2)."""
     values = data.model_dump()
     if problems := consistency_problems(values):
         raise unprocessable("; ".join(problems))
     values["official_url_normalized"] = normalize_url(data.official_url)
+    if discovered_at is not None:
+        values["discovered_at"] = discovered_at
     values.update(_verified_at(values, {"verification_status": "unverified"}))
     with conn.transaction():
         return _insert_with_unique_slug(conn, values, data.title)

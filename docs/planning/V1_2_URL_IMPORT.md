@@ -47,3 +47,26 @@ The types between the steps are in `services/api/src/fhc_api/importing/models.py
 - Duplicate check in V1.2 is the exact normalized URL only; fuzzy dedup is V1.3.
 - No image download (og:image is only stored as a suggestion in `stats`, not as `poster_url`).
 - No Playwright in V1.2. A JS-only page gives a clear "no readable content" error.
+
+## Part D as built
+
+- Migration `20261012120000_url_import.sql`. `event_field_evidence` stores one row per kept
+  value and one row per flag (`value_text`/`source` null on a flag-only row), because a
+  field can carry a value and several flags; `field` is a column-name check, not an enum.
+- `POST /imports/url` (`import_event_url`) → `{outcome: created|duplicate, event_id, run}`;
+  409 when no PageLoader/Extractor is injected (`create_app(page_loader=, extractor=)`),
+  422 for an invalid/private URL (no run) or a `PageError` (run `failed`).
+  `GET /imports/runs` (`list_import_runs`), `GET /events/{id}/evidence`
+  (`get_event_evidence`, latest run, grouped per field, `matches_current`).
+- `official_url` = the final URL after a same-site redirect (same host ignoring `www.`),
+  else the requested URL; the final URL is in `run.stats`. Duplicates are checked before
+  the fetch (requested URL) and again in the write transaction (requested, final and
+  chosen URL; advisory lock against concurrent imports of the same URL).
+- Event source: role `official`, source "Manual entry" (as in the legacy import).
+- Values are validated again with the event field rules; cross-field conflicts drop the
+  later field (`end_date`, `team_max`, `prize_pool`) with a `rule_violation` flag. Without
+  a proposed title the page title is used (`meta` evidence), else "Imported from <host>".
+- Audit: `url_import` on the created event (`run_id`, counts). Failed runs have no event
+  and are visible in the run list only.
+- Admin: `/events/import` (form + recent runs), "Import from URL" on the Events toolbar,
+  and an "Imported fields" card on the review page. The admin waits up to 240 s.
