@@ -1,6 +1,6 @@
-# Local LLM Benchmark (V1.2 part C)
+# LLM Extraction Benchmark (V1.2)
 
-Status: **harness and dataset ready; results pending** (needs `importing/page.py` and `importing/extraction.py`).
+Status: **done 2026-10-13**; default model `gpt-5.4-mini` (D-23). Gold answers still need the owner check; Turkish summary rating pending.
 Plan and pass criteria: `LOCAL_LLM_RESEARCH.md` §2-3. Prepared 2026-10-11.
 
 ## Method
@@ -105,6 +105,50 @@ Notes for interpreting results:
 
 ## Results
 
-Pending (needs `page.py` + `extraction.py`). Fill in: summary table per model (validity, accuracy, date accuracy,
-hallucinations, fabricated dates, p50/p95/max s, VRAM peak), per-field accuracy, Turkish ratings, decision
-(default model, fallback), and which downloaded models to remove.
+All runs use the real loader (`--loader real`) on the saved pages. Gold answers are marked
+`needs_owner_check`, so the numbers are provisional.
+
+### Run 1: local models, before the error-analysis fixes (2026-10-11, 20 pages)
+
+| Model | Valid | Acc. | Date acc. | Halluc. | Fab. dates | p50 s | max s | VRAM MiB |
+|---|---|---|---|---|---|---|---|---|
+| `qwen3.5:0.8b` | 100% | 58% | 59% | 20 | 1 | 5.6 | 13.6 | 1588 |
+| `qwen3.5:4b-q4_K_M` | 100% | 66% | 73% | 8 | 1 | 9.5 | 13.6 | 5847 |
+| `gemma4:e2b-it-qat` | 100% | 66% | 70% | 17 | 2 | 6.9 | 53.3 | 5847 |
+| `gemma4:e4b-it-qat` | 100% | 68% | 73% | 4 | 0 | 11.4 | 21.7 | 4458 |
+
+The error analysis (commit 24bef21) found most losses in the loader (sidebars and links missing
+from the text) and in false rejections by the evidence checks, not in the models. After the fixes a
+5-page check with `gemma4:e4b-it-qat` gave 71% → 88% accuracy and 71% → 100% date accuracy.
+
+### Run 2: OpenAI, after the fixes (2026-10-13)
+
+Mini models on all 20 pages; full models on 8 pages (to stay inside the 250k/day full-model pool):
+`legacy-borsa-istanbul legacy-greece-turkiye devpost-hackturin devpost-indux tr-vbt-mugla
+tr-ing-coderspace tr-datamedx tr-anadolu-ankara`.
+
+| Model | Pages | Valid | Acc. | Date acc. | Halluc. | Fab. dates | p50 s | max s | Tokens in / out per page |
+|---|---|---|---|---|---|---|---|---|---|
+| `gpt-5.4-mini` | 20 | 100% | 92% | 100% | 3 | 0 | 3.6 | 5.4 | 3379 / 540 |
+| `gpt-4.1-mini` | 20 | 100% | 92% | 100% | 4 | 1 | 4.3 | 6.9 | 3381 / 592 |
+| `gpt-5.4` | 8 | 100% | 92% | 100% | 0 | 0 | 6.8 | 8.9 | 3216 / 572 |
+| `gpt-4o` | 8 | 100% | 92% | 100% | 1 | 0 | 3.9 | 5.1 | 3219 / 528 |
+
+Per-field accuracy (20 pages, mini models): title 100/100, organizer 81/75, format 86/86, city
+83/83, country 80/40, venue 80/80, start/end/deadline 100, team_min 91/91, team_max 100,
+prize_pool 100, currency 92/92, is_free 100/100, application_url 75/100 (`gpt-5.4-mini` /
+`gpt-4.1-mini`). Weakest fields in every model: country, city, venue, organizer; part of this is
+likely gold error (seven suspected gold errors are listed for the owner).
+
+### Decision
+
+- **Default: `gpt-5.4-mini`** (reasoning effort `none`, temperature 0). Same accuracy as the full
+  models, no fabricated dates, fastest, and in the 2.5M/day pool: about 3.9k tokens per page, so
+  roughly 600+ pages per day.
+- `gpt-4.1-mini` is not chosen: one fabricated date and weak `country`.
+- `gpt-5.4` stays the ceiling for retries and flagged cases (D-24), not the default.
+- Ollama (`gemma4:e4b-it-qat`) stays as the offline fallback (`LLM_PROVIDER=ollama`).
+- Pass criteria (LOCAL_LLM_RESEARCH §3): validity ≥ 95% ✓, 0 fabricated dates ✓, date accuracy
+  ≥ 90% ✓, < 60 s per page ✓, Turkish quality ≥ 3.5/5: **pending the owner's blind rating**.
+- Local models no longer needed can be removed by the owner (`ollama rm qwen3.5:0.8b
+  qwen3.5:4b-q4_K_M gemma4:e2b-it-qat`); keep `gemma4:e4b-it-qat` as the fallback.

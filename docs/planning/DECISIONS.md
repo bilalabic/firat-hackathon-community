@@ -155,7 +155,8 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Data sharing:** prompts and outputs may be used for training, and calls are a transfer to the US (D-22). Only public event pages go there; application data never does
 - **Guards:** KVKK mask (`llm/pii.py`: e-mails, phones, valid TC Kimlik numbers) on every outbound string; architecture test keeps `fhc_api.community` from importing `fhc_api.llm`; `store: false`; dedicated project key with a **hard monthly spend limit**; in-process daily token budget (`OPENAI_DAILY_TOKEN_BUDGET`, follow-up: DB-backed counter); errors and logs never carry the key or prompt
 - **Pass 1:** strict structured output with `maxLength`/`minimum` and `temperature: 0` at effort `none` verified live 2026-10-13 (OPENAI_API_RESEARCH §5)
-- **Status:** Accepted (2026-10-13), owner decision; default model pending the V1.2 OpenAI benchmark
+- **Pass 2:** V1.2 benchmark 2026-10-13 (LLM_BENCHMARK, run 2): `gpt-5.4-mini` 92% accuracy, 100% date accuracy, 0 fabricated dates, 3.6 s and about 3.9k tokens per page → default model `gpt-5.4-mini`
+- **Status:** Accepted (2026-10-13), owner decision; default model `gpt-5.4-mini` per the benchmark
 
 ### D-24 Discovery architecture: deterministic adapters first, web search as a gap-finder
 - **Options:** A. LLM web search (OpenAI `web_search`) as the engine · B. curated source adapters + change detection as the engine, with watchlists, inbound links, web search and link expansion as supplements · C. generic JSON-LD harvesting (Common Crawl / Web Data Commons) · D. third-party search APIs (Brave, Exa, Tavily, SerpAPI)
