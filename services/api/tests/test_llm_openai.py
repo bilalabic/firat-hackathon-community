@@ -2,6 +2,7 @@
 
 import json
 import logging
+import threading
 from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import Any
@@ -60,7 +61,8 @@ def make_provider(
     sleeps: list[float] = []
     client = httpx2.Client(transport=httpx2.MockTransport(recorder))
     kwargs.setdefault("jitter", lambda: 0.0)
-    provider = OpenAIProvider(KEY, model, timeout_s=5, client=client, sleep=sleeps.append, **kwargs)
+    kwargs.setdefault("sleep", sleeps.append)
+    provider = OpenAIProvider(KEY, model, timeout_s=5, client=client, **kwargs)
     return provider, recorder, sleeps
 
 
@@ -252,6 +254,67 @@ def test_strict_schema_rejects_free_form_maps_and_non_object_root() -> None:
         to_strict_schema({"anyOf": [{"type": "string"}, {"type": "null"}]})
 
 
+_NOT_STRICT = {"title", "default", "allOf", "oneOf", "not", "prefixItems", "patternProperties"}
+
+
+def assert_strict(node: object, defs: dict[str, object], path: str = "#") -> None:
+    """Walk a schema and check the Structured Outputs strict rules (research §2)."""
+    if isinstance(node, list):
+        for i, item in enumerate(node):
+            assert_strict(item, defs, f"{path}/{i}")
+        return
+    if not isinstance(node, dict):
+        return
+    assert not _NOT_STRICT & node.keys(), f"{path}: {sorted(_NOT_STRICT & node.keys())}"
+    if "$ref" in node:
+        assert node["$ref"].removeprefix("#/$defs/") in defs, path
+    if node.get("type") == "object":
+        assert node["additionalProperties"] is False, path
+        assert node["required"] == list(node["properties"]), path
+    for key, value in node.items():
+        if key in {"properties", "$defs"}:
+            for name, sub in value.items():
+                assert_strict(sub, defs, f"{path}/{key}/{name}")
+        elif key not in {"enum", "required", "const"}:
+            assert_strict(value, defs, f"{path}/{key}")
+
+
+def test_extraction_output_schema_converts_to_a_valid_strict_schema() -> None:
+    strict = to_strict_schema(ExtractionOutput.model_json_schema())
+
+    assert strict["type"] == "object"
+    assert_strict(strict, strict["$defs"])
+    # Nullable values, length caps and the format enum survive.
+    text160 = strict["$defs"]["_Text160"]["properties"]["value"]
+    assert text160 == {"anyOf": [{"type": "string", "maxLength": 160}, {"type": "null"}]}
+    assert strict["$defs"]["_Date"]["properties"]["value"]["description"] == "YYYY-MM-DD"
+    assert "enum" in json.dumps(strict)
+    # A complete example still validates with the original model.
+    example = {name: {"value": None, "snippet": None} for name in ExtractionOutput.model_fields}
+    assert ExtractionOutput.model_validate(example)
+
+
+@pytest.mark.parametrize(
+    ("schema", "keyword"),
+    [
+        ({"type": "object", "properties": {"a": {"oneOf": [{"type": "string"}]}}}, "oneOf"),
+        (
+            {"type": "object", "properties": {"a": {"type": "array", "prefixItems": []}}},
+            "prefixItems",
+        ),
+        (
+            {"type": "object", "properties": {}, "patternProperties": {"^x": {}}},
+            "patternProperties",
+        ),
+    ],
+)
+def test_strict_schema_rejects_keywords_it_cannot_express(
+    schema: dict[str, Any], keyword: str
+) -> None:
+    with pytest.raises(LLMConfigError, match=keyword):
+        to_strict_schema(schema)
+
+
 def test_strict_schema_inlines_single_allof() -> None:
     schema = {
         "type": "object",
@@ -325,10 +388,59 @@ def test_incomplete_structured_output_is_not_repaired() -> None:
     assert len(rec.bodies) == 1
 
 
-def test_incomplete_text_returns_what_arrived() -> None:
-    cut = reply("Merh", status="incomplete", extra={"incomplete_details": {"reason": "x"}})
-    provider, _, _ = make_provider(sequence(cut))
+def incomplete(text: str, reason: str) -> httpx2.Response:
+    return reply(text, status="incomplete", extra={"incomplete_details": {"reason": reason}})
+
+
+def test_text_cut_at_max_tokens_returns_what_arrived() -> None:
+    provider, _, _ = make_provider(sequence(incomplete("Merh", "max_output_tokens")))
     assert provider.generate_text(system="s", user="u", max_tokens=2) == "Merh"
+
+
+@pytest.mark.parametrize(
+    ("response", "match"),
+    [
+        (incomplete("", "max_output_tokens"), "hit max_output_tokens"),
+        (incomplete("Partial", "content_filter"), r"stopped the output \(content_filter\)"),
+        (incomplete("Partial", "other_reason"), r"incomplete \(other_reason\)"),
+    ],
+)
+def test_incomplete_text_without_usable_output_raises(
+    response: httpx2.Response, match: str
+) -> None:
+    provider, _, _ = make_provider(sequence(response))
+    with pytest.raises(LLMOutputError, match=match):
+        provider.generate_text(system="s", user="u", max_tokens=5)
+
+
+def test_structured_content_filter_is_worded_per_reason() -> None:
+    provider, _, _ = make_provider(sequence(incomplete('{"city"', "content_filter")))
+    with pytest.raises(LLMOutputError, match="content_filter") as info:
+        provider.generate_structured(system="s", user="u", schema=Sample)
+    assert "OPENAI_MAX_OUTPUT_TOKENS" not in str(info.value)
+
+
+def test_multiple_message_and_reasoning_items_are_joined() -> None:
+    body = {
+        "status": "completed",
+        "output": [
+            {"type": "reasoning", "summary": []},
+            {"type": "message", "content": [{"type": "output_text", "text": '{"city": '}]},
+            {"type": "reasoning", "summary": [{"type": "summary_text", "text": "ignored"}]},
+            {
+                "type": "message",
+                "content": [
+                    {"type": "output_text", "text": '"x", '},
+                    {"type": "output_text", "text": '"year": 1}'},
+                ],
+            },
+        ],
+        "usage": {"input_tokens": 1, "output_tokens": 1, "total_tokens": 2},
+    }
+    provider, _, _ = make_provider(sequence(httpx2.Response(200, json=body)))
+    assert provider.generate_structured(system="s", user="u", schema=Sample) == Sample(
+        city="x", year=1
+    )
 
 
 def test_failed_response_raises() -> None:
@@ -379,12 +491,83 @@ def test_rate_limit_is_retried_honouring_retry_after() -> None:
 
 def test_server_errors_use_exponential_backoff_then_give_up() -> None:
     provider, rec, sleeps = make_provider(
-        sequence(error(500, None), error(500, None), error(500, None))
+        sequence(error(503, None), error(502, None), error(504, None))
     )
-    with pytest.raises(LLMUnavailableError, match="HTTP 500"):
+    with pytest.raises(LLMUnavailableError, match="HTTP 504"):
         provider.generate_text(system="s", user="u", max_tokens=5)
     assert len(rec.requests) == 3  # 1 + max_retries (2)
     assert sleeps == [0.5, 1.0]
+
+
+def test_500_on_post_is_not_retried() -> None:
+    # The work may have been done (and billed) before the 500.
+    provider, rec, sleeps = make_provider(sequence(error(500, None), reply("ok")))
+    with pytest.raises(LLMUnavailableError, match="HTTP 500"):
+        provider.generate_text(system="s", user="u", max_tokens=5)
+    assert len(rec.requests) == 1
+    assert sleeps == []
+
+
+def test_connect_timeout_is_retried() -> None:
+    calls: list[int] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        calls.append(1)
+        if len(calls) == 1:
+            raise httpx2.ConnectTimeout("connect timed out", request=request)
+        return reply("ok")
+
+    provider, rec, sleeps = make_provider(handler)
+    assert provider.generate_text(system="s", user="u", max_tokens=5) == "ok"
+    assert len(rec.requests) == 2
+    assert sleeps == [0.5]
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def sleep(self, seconds: float) -> None:
+        self.now += seconds
+
+
+def test_total_timeout_caps_retries_and_shrinks_the_attempt_timeout() -> None:
+    clock = FakeClock()
+    timeouts: list[float] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        timeouts.append(request.extensions["timeout"]["read"])
+        clock.now += 4.0  # each attempt takes 4 s
+        return error(503, None, **{"retry-after": "1"})
+
+    provider, rec, _ = make_provider(
+        handler, total_timeout_s=8, monotonic=clock, sleep=clock.sleep, max_retries=5
+    )
+
+    with pytest.raises(LLMUnavailableError, match="HTTP 503"):
+        provider.generate_text(system="s", user="u", max_tokens=5)
+
+    # t=0: attempt 1 (5 s timeout) -> t=4; sleep 1 -> t=5; attempt 2 gets the 3 s left -> t=9;
+    # no time for a third attempt although max_retries allows it.
+    assert timeouts == [5.0, 3.0]
+    assert len(rec.requests) == 2
+    assert clock.now == 9.0
+
+
+def test_total_timeout_covers_the_repair_retry() -> None:
+    clock = FakeClock()
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        clock.now += 7.5
+        return reply('{"city": "x"}')  # invalid: needs a repair
+
+    provider, rec, _ = make_provider(handler, total_timeout_s=8, monotonic=clock, sleep=clock.sleep)
+    with pytest.raises(LLMTimeoutError, match="total time budget"):
+        provider.generate_structured(system="s", user="u", schema=Sample)
+    assert len(rec.requests) == 1
 
 
 def test_retry_after_is_capped() -> None:
@@ -477,6 +660,8 @@ def test_errors_and_logs_never_contain_the_key_or_the_prompt(
         ({"base_url": "http://api.openai.com"}, "https"),
         ({"base_url": "https://u:p@api.openai.com"}, "credentials"),
         ({"daily_token_budget": 0}, "budget"),
+        ({"daily_token_budget": 100, "max_output_tokens": 101}, "budget"),
+        ({"total_timeout_s": 0}, "total timeout"),
     ],
 )
 def test_invalid_configuration_is_rejected_without_echoing_secrets(
@@ -487,6 +672,14 @@ def test_invalid_configuration_is_rejected_without_echoing_secrets(
         OpenAIProvider(**args)
     assert "has a space" not in str(info.value)
     assert "u:p" not in str(info.value)
+
+
+@pytest.mark.parametrize("model", [KEY, "sk-proj-abcdefghijklmnop", "SK-abc"])
+def test_model_name_that_looks_like_a_key_is_rejected(model: str) -> None:
+    with pytest.raises(LLMConfigError, match="looks like an API key") as info:
+        OpenAIProvider(KEY, model, timeout_s=1)
+    assert model not in str(info.value)
+    assert "abcdefghijklmnop" not in str(info.value)
 
 
 def test_http_base_url_is_allowed_for_localhost() -> None:
@@ -501,12 +694,14 @@ def test_daily_budget_refuses_calls_and_resets_at_utc_midnight() -> None:
     now = [datetime(2026, 10, 13, 23, 0, tzinfo=UTC)]
     provider, rec, _ = make_provider(
         lambda _r: reply("ok", input_tokens=80, output_tokens=40),
-        daily_token_budget=200,
+        daily_token_budget=300,
+        max_output_tokens=10,
         utc_now=lambda: now[0],
     )
 
+    # Each call reserves about 70 tokens (estimated input + max_tokens) and uses 120.
     provider.generate_text(system="s", user="u", max_tokens=5)  # 120
-    provider.generate_text(system="s", user="u", max_tokens=5)  # 240: may overshoot once
+    provider.generate_text(system="s", user="u", max_tokens=5)  # 240
     assert provider.tokens_used_today == 240
     with pytest.raises(LLMError, match="daily token budget reached"):
         provider.generate_text(system="s", user="u", max_tokens=5)
@@ -516,6 +711,60 @@ def test_daily_budget_refuses_calls_and_resets_at_utc_midnight() -> None:
     assert provider.tokens_used_today == 0
     assert provider.generate_text(system="s", user="u", max_tokens=5) == "ok"
     assert provider.total_usage.total_tokens == 360
+
+
+def test_budget_reservation_blocks_a_concurrent_overshoot() -> None:
+    entered = threading.Event()
+    release = threading.Event()
+
+    def handler(_request: httpx2.Request) -> httpx2.Response:
+        entered.set()
+        assert release.wait(5)
+        return reply("ok", input_tokens=50, output_tokens=10)
+
+    provider, rec, _ = make_provider(handler, daily_token_budget=6000, max_output_tokens=4000)
+    results: list[str] = []
+    worker = threading.Thread(
+        target=lambda: results.append(provider.generate_text(system="s", user="u", max_tokens=4000))
+    )
+    worker.start()
+    try:
+        assert entered.wait(5)
+        # The call in flight holds ~4,070 tokens although nothing has been used yet.
+        assert provider.tokens_used_today == 0
+        assert provider.tokens_available_today < 2000
+        with pytest.raises(LLMError, match="daily token budget reached"):
+            provider.generate_text(system="s", user="u", max_tokens=4000)
+    finally:
+        release.set()
+        worker.join(5)
+    assert results == ["ok"]
+    assert provider.tokens_used_today == 60
+    assert provider.tokens_available_today == 5940  # reservation settled to actual usage
+    assert provider.generate_text(system="s", user="u", max_tokens=4000) == "ok"
+    assert len(rec.requests) == 2
+
+
+def test_failed_call_releases_its_reservation() -> None:
+    provider, _, _ = make_provider(sequence(error(400, None)), daily_token_budget=5000)
+    with pytest.raises(LLMError):
+        provider.generate_structured(system="s", user="u", schema=Sample)
+    assert provider.tokens_available_today == 5000
+
+
+def test_health_reports_budget_exhaustion_without_a_request() -> None:
+    provider, rec, _ = make_provider(
+        sequence(reply("ok", input_tokens=100, output_tokens=20)),
+        daily_token_budget=4000,
+        max_output_tokens=4000,
+    )
+    provider.generate_text(system="s", user="u", max_tokens=5)
+
+    health = provider.health()
+
+    assert health.status == "error"
+    assert "daily token budget reached" in health.message
+    assert len(rec.requests) == 1  # no GET /v1/models
 
 
 # -- PII masking --------------------------------------------------------------------------------
@@ -533,6 +782,21 @@ def test_pii_is_masked_in_instructions_and_input() -> None:
         assert secret not in body
     assert rec.bodies[0]["instructions"] == "Contact [email]"
     assert rec.bodies[0]["input"][0]["content"] == "Ara: [phone], TC [tc_kimlik], mail [email]"
+
+
+def test_repair_turn_is_masked() -> None:
+    provider, rec, _ = make_provider(
+        sequence(
+            reply('{"city": "info@hack.org.tr", "note": "+90 532 123 45 67"}'),
+            reply('{"city": "x", "year": 1}'),
+        )
+    )
+    provider.generate_structured(system="s", user="u", schema=Sample)
+
+    repair = json.dumps(rec.bodies[1], ensure_ascii=False)
+    assert "info@hack.org.tr" not in repair
+    assert "532 123 45 67" not in repair
+    assert rec.bodies[1]["input"][1]["content"] == '{"city": "[email]", "note": "[phone]"}'
 
 
 # -- health -----------------------------------------------------------------------------------

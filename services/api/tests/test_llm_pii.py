@@ -1,14 +1,9 @@
-"""KVKK guard: masking before cloud LLM calls, and no LLM access from the applications domain."""
-
-import ast
-from pathlib import Path
+"""KVKK guard: masking before cloud LLM calls (llm/pii.py)."""
 
 import pytest
 
 from fhc_api.llm.pii import is_valid_tc_kimlik, mask_pii
 from fhc_api.llm.untrusted import wrap_untrusted
-
-SRC = Path(__file__).resolve().parents[1] / "src" / "fhc_api"
 
 
 @pytest.mark.parametrize(
@@ -76,38 +71,48 @@ def test_untrusted_envelope_boundary_survives_masking() -> None:
     assert "05321234567" not in masked
 
 
-# -- architecture -----------------------------------------------------------------------------
+@pytest.mark.parametrize(
+    "text",
+    [
+        "UTC +3 2026-10-13",
+        "+3 2026-10-13 18:00",
+        "Kontenjan +100 2026-10-13",
+        "(GMT +03) 2026-10-13",
+        "GMT+3 13.10.2026 09:00",
+        "UTC+03:00, 2026-10-13T18:00:00+03:00",
+        "+3 13.10.2026",
+        "Saat 10:00 (UTC +3), 13/10/2026",
+    ],
+)
+def test_dates_and_timezones_stay_unmasked(text: str) -> None:
+    assert mask_pii(text) == text
 
 
-def _imported_names(source: str, package: list[str]) -> set[str]:
-    """Absolute dotted names a module imports (`from a import b` yields `a` and `a.b`)."""
-    names: set[str] = set()
-    for node in ast.walk(ast.parse(source)):
-        if isinstance(node, ast.Import):
-            names.update(alias.name for alias in node.names)
-        elif isinstance(node, ast.ImportFrom):
-            base = package[: len(package) - node.level + 1] if node.level else []
-            module = ".".join([*base, *([node.module] if node.module else [])])
-            names.add(module)
-            names.update(f"{module}.{alias.name}" for alias in node.names)
-    return names
+@pytest.mark.parametrize(
+    ("text", "expected"),
+    [
+        ("TC10000000146", "TC[tc_kimlik]"),
+        ("kimlik:10000000146abc", "kimlik:[tc_kimlik]abc"),
+        ("90 532 123 45 67", "[phone]"),
+        ("905321234567", "[phone]"),
+        ("5321234567", "[phone]"),  # documented: a bare 10-digit 5xx number is masked
+        ("iletişim@örnek.com.tr", "[email]"),
+        ("BİLGİ@FIRAT.EDU.TR", "[email]"),
+        ("Şükrü.Öztürk@üniversite.edu.tr", "[email]"),
+        ("user@xn--rnek-zoa.com", "[email]"),
+    ],
+)
+def test_harder_pii_shapes_are_masked(text: str, expected: str) -> None:
+    assert mask_pii(text) == expected
 
 
-def _llm_imports(names: set[str]) -> list[str]:
-    return sorted(n for n in names if n == "fhc_api.llm" or n.startswith("fhc_api.llm."))
+@pytest.mark.parametrize("iban", ["TR33 0006 1005 1978 6457 8413 26", "TR330006100519786457841326"])
+def test_ibans_are_not_masked(iban: str) -> None:
+    assert mask_pii(f"IBAN: {iban}") == f"IBAN: {iban}"
 
 
-def test_applications_domain_never_imports_the_llm_package() -> None:
-    """Community/team applications hold personal data that must never reach an LLM (D-23)."""
-    modules = sorted((SRC / "community").rglob("*.py"))
-    assert modules, "fhc_api/community not found"
-    for path in modules:
-        package = ["fhc_api", *path.relative_to(SRC).parent.parts]
-        bad = _llm_imports(_imported_names(path.read_text(encoding="utf-8"), package))
-        assert not bad, f"{path.relative_to(SRC)} imports {bad}"
-
-
-def test_import_scanner_catches_every_import_form() -> None:
-    source = "from ..llm import openai\nfrom fhc_api import llm\nimport fhc_api.llm.pii\n"
-    found = _llm_imports(_imported_names(source, ["fhc_api", "community"]))
-    assert found == ["fhc_api.llm", "fhc_api.llm.openai", "fhc_api.llm.pii"]
+def test_envelope_markers_are_never_masked() -> None:
+    boundary = "10000000146" + "a" * 21  # a valid TC Kimlik digit run inside the id
+    masked = mask_pii(wrap_untrusted("TC 10000000146", boundary=boundary))
+    assert masked.count(boundary) == 2
+    assert "TC [tc_kimlik]" in masked

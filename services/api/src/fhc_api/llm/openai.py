@@ -21,13 +21,17 @@ and a strict schema with `maxLength`/`minimum`; gpt-4o accepts `temperature: 0` 
 `reasoning.effort` (`reasoning`), whether `temperature` is sent (`send_temperature`) and the
 429 codes that mean quota or spend exhaustion (`quota_error_codes`).
 
-Retries: connection errors and HTTP 408/429 (rate limit)/500/502/503/504, up to `max_retries`
-times, with exponential backoff and jitter, honouring `Retry-After`/`retry-after-ms`. A read
-timeout is not retried: OpenAI may still be generating (and billing) the first request.
+Retries: connection errors, connect timeouts (no request was sent) and HTTP 408/429 (rate
+limit)/502/503/504, up to `max_retries` times, with exponential backoff and jitter, honouring
+`Retry-After`/`retry-after-ms`. Not retried: a read timeout and HTTP 500 on POST (OpenAI may
+have processed, and billed, the first request). Every generate_* call (including its repair
+retry) has a total wall-clock budget (`total_timeout_s`): each attempt gets the remaining time
+as its timeout, and no retry starts that could not finish in time.
 Configuration is injected through the constructor; this module reads no environment variables.
 """
 
 import ipaddress
+import json
 import logging
 import random
 import re
@@ -69,6 +73,13 @@ REASONING_EFFORTS = frozenset({"none", "minimal", "low", "medium", "high", "xhig
 REASONING_MODEL_PREFIXES = ("gpt-5", "o1", "o3", "o4")
 
 RETRY_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+# A 500 on POST /v1/responses may come after the work was done (and billed): never retried.
+NO_RETRY_POST_STATUSES = frozenset({500})
+DEFAULT_TOTAL_TIMEOUT_S = 120.0
+# No attempt starts with less time than this before the deadline.
+MIN_ATTEMPT_S = 1.0
+# Input estimate for the budget reservation; conservative for Turkish (3.5 chars/token, §4).
+CHARS_PER_TOKEN_ESTIMATE = 3
 # 429 codes that mean "no money/quota left": never retried.
 QUOTA_ERROR_CODES = frozenset(
     {
@@ -116,6 +127,8 @@ _STRICT_FORMATS = frozenset(
     {"date-time", "time", "date", "duration", "email", "hostname", "ipv4", "ipv6", "uuid"}
 )
 _NAMED_SUBSCHEMAS = frozenset({"properties", "$defs", "definitions"})
+# Keywords that cannot be dropped without changing the meaning of the schema.
+_REJECTED_KEYWORDS = frozenset({"oneOf", "prefixItems", "patternProperties"})
 
 
 def to_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
@@ -124,7 +137,8 @@ def to_strict_schema(schema: dict[str, Any]) -> dict[str, Any]:
     Every object gets `additionalProperties: false` and lists all its properties in `required`
     (optional values stay expressible as `anyOf [..., {"type": "null"}]`). Unsupported keywords
     and formats are dropped; a single-element `allOf` is inlined. Free-form maps and multi-part
-    `allOf` cannot be expressed and raise LLMConfigError. The input is not modified.
+    `allOf`, `oneOf`, `prefixItems` and `patternProperties` cannot be expressed and raise
+    LLMConfigError. The input is not modified.
     """
     strict = _strict_node(schema)
     if not isinstance(strict, dict) or strict.get("type") != "object":
@@ -139,6 +153,8 @@ def _strict_node(node: Any) -> Any:
         return node
     out: dict[str, Any] = {}
     for key, value in node.items():
+        if key in _REJECTED_KEYWORDS:
+            raise LLMConfigError(f"Strict structured output does not support {key}.")
         if key in _DROPPED_KEYWORDS:
             continue
         if key == "format" and value not in _STRICT_FORMATS:
@@ -266,6 +282,17 @@ def _validated_base_url(base_url: str) -> str:
     return f"{parts.scheme}://{parts.netloc}{path}"
 
 
+def _incomplete_message(reason: str) -> str:
+    if reason == "max_output_tokens":
+        return (
+            "OpenAI output hit max_output_tokens; raise OPENAI_MAX_OUTPUT_TOKENS or shorten "
+            "the input."
+        )
+    if reason == "content_filter":
+        return "OpenAI stopped the output (content_filter)."
+    return f"OpenAI output was incomplete ({reason})."
+
+
 def _model_prefixed(model: str, prefixes: tuple[str, ...]) -> bool:
     return model.lower().startswith(prefixes)
 
@@ -281,6 +308,8 @@ class _DailyCounter:
     budget: int
     day: date
     used: int = 0
+    # Tokens held by calls in flight (estimated input + max output), settled afterwards.
+    reserved: int = 0
     lock: threading.Lock = field(default_factory=threading.Lock)
 
 
@@ -306,6 +335,8 @@ class OpenAIProvider:
         sleep: Callable[[float], None] = time.sleep,
         utc_now: Callable[[], datetime] = lambda: datetime.now(UTC),
         jitter: Callable[[], float] = random.random,
+        total_timeout_s: float = DEFAULT_TOTAL_TIMEOUT_S,
+        monotonic: Callable[[], float] = time.monotonic,
     ) -> None:
         """`reasoning`: None picks from the model name (REASONING_MODEL_PREFIXES); True/False
         forces it. `reasoning_effort` None omits `reasoning` even for reasoning models.
@@ -315,10 +346,15 @@ class OpenAIProvider:
             # Never echo the value: a mistyped key is still a secret.
             raise LLMConfigError("OpenAI API key is missing or has an invalid format.")
         model = model.strip()
+        if model.lower().startswith("sk-"):
+            # An API key pasted into OPENAI_MODEL would otherwise travel in bodies and logs.
+            raise LLMConfigError("OpenAI model name looks like an API key; check OPENAI_MODEL.")
         if not _MODEL_RE.fullmatch(model):
             raise LLMConfigError("OpenAI model name is empty or has invalid characters.")
         if timeout_s <= 0:
             raise LLMConfigError("OpenAI timeout must be positive.")
+        if total_timeout_s <= 0:
+            raise LLMConfigError("OpenAI total timeout must be positive.")
         if reasoning_effort is not None and reasoning_effort not in REASONING_EFFORTS:
             raise LLMConfigError(
                 f"OpenAI reasoning effort must be one of {', '.join(sorted(REASONING_EFFORTS))}."
@@ -327,12 +363,14 @@ class OpenAIProvider:
             raise LLMConfigError("OpenAI max_output_tokens must be positive.")
         if max_retries < 0:
             raise LLMConfigError("OpenAI max_retries must not be negative.")
-        if daily_token_budget <= 0:
-            raise LLMConfigError("OpenAI daily token budget must be positive.")
+        if daily_token_budget < max_output_tokens:
+            raise LLMConfigError("OpenAI daily token budget must be at least max_output_tokens.")
         self._base_url = _validated_base_url(base_url)
         self._api_key = api_key
         self._model = model
         self._timeout_s = timeout_s
+        self._total_timeout_s = total_timeout_s
+        self._monotonic = monotonic
         is_reasoning = (
             _model_prefixed(model, REASONING_MODEL_PREFIXES) if reasoning is None else reasoning
         )
@@ -378,6 +416,14 @@ class OpenAIProvider:
             return self._counter.used
 
     @property
+    def tokens_available_today(self) -> int:
+        """Budget left for new calls: budget - used - reserved by calls in flight."""
+        with self._counter.lock:
+            self._roll_day()
+            counter = self._counter
+            return max(0, counter.budget - counter.used - counter.reserved)
+
+    @property
     def daily_token_budget(self) -> int:
         return self._counter.budget
 
@@ -408,21 +454,28 @@ class OpenAIProvider:
             self._counter.day = today
             self._counter.used = 0
 
-    def _check_budget(self) -> None:
+    def _reserve(self, tokens: int) -> None:
+        """Hold `tokens` of today's budget for one call, or refuse the call."""
         with self._counter.lock:
             self._roll_day()
-            used, budget = self._counter.used, self._counter.budget
-        if used >= budget:
-            raise LLMError(
-                f"OpenAI daily token budget reached ({used} of {budget} tokens used today; "
-                "resets at 00:00 UTC)."
-            )
+            counter = self._counter
+            used, reserved, budget = counter.used, counter.reserved, counter.budget
+            if used + reserved + tokens <= budget:
+                counter.reserved += tokens
+                return
+        raise LLMError(
+            f"OpenAI daily token budget reached ({used} used and {reserved} reserved of "
+            f"{budget} tokens today; this call needs up to {tokens}; resets at 00:00 UTC)."
+        )
 
-    def _record(self, usage: TokenUsage) -> None:
+    def _settle(self, reservation: int, usage: TokenUsage | None) -> None:
+        """Release a reservation and count the tokens the call actually used."""
         with self._counter.lock:
+            self._counter.reserved = max(0, self._counter.reserved - reservation)
             self._roll_day()
-            self._counter.used += usage.total_tokens
-            self._total_usage += usage
+            if usage is not None:
+                self._counter.used += usage.total_tokens
+                self._total_usage += usage
 
     # -- transport ---------------------------------------------------------------------------
 
@@ -459,8 +512,13 @@ class OpenAIProvider:
         delay = BACKOFF_BASE_S * (2.0**attempt) * (1 + 0.25 * self._jitter())
         return min(delay, MAX_RETRY_DELAY_S)
 
-    def _request(self, method: str, path: str, json: dict[str, Any] | None = None) -> Any:
-        """Send one request (with retries) and return the decoded JSON body.
+    def _deadline(self) -> float:
+        return self._monotonic() + self._total_timeout_s
+
+    def _request(
+        self, method: str, path: str, body: dict[str, Any] | None = None, *, deadline: float
+    ) -> Any:
+        """Send one request (with retries, within `deadline`) and return the decoded JSON body.
 
         httpx2 exceptions are converted outside the `except` block so that no request object
         (which carries the Authorization header) is chained onto the error we raise.
@@ -468,15 +526,25 @@ class OpenAIProvider:
         url = f"{self._base_url}{path}"
         attempt = 0
         while True:
+            remaining = deadline - self._monotonic()
+            if remaining < MIN_ATTEMPT_S:
+                raise LLMTimeoutError(
+                    f"OpenAI call exceeded its total time budget ({self._total_timeout_s:g} s)."
+                )
+            attempt_timeout = min(self._timeout_s, remaining)
             error: LLMError | None = None
             retryable = False
             response: httpx2.Response | None = None
             try:
                 response = self._client.request(
-                    method, url, json=json, headers=self._headers(), timeout=self._timeout_s
+                    method, url, json=body, headers=self._headers(), timeout=attempt_timeout
                 )
+            except httpx2.ConnectTimeout:
+                # Nothing was sent, so a retry cannot double-bill.
+                error = LLMTimeoutError("Timed out connecting to the OpenAI API.")
+                retryable = True
             except httpx2.TimeoutException:
-                error = LLMTimeoutError(f"OpenAI did not answer within {self._timeout_s:g} s.")
+                error = LLMTimeoutError(f"OpenAI did not answer within {attempt_timeout:g} s.")
             except httpx2.ConnectError:
                 error = LLMUnavailableError("Cannot connect to the OpenAI API.")
                 retryable = True
@@ -484,9 +552,9 @@ class OpenAIProvider:
                 error = LLMError(f"OpenAI request failed ({type(exc).__name__}).")
 
             if response is not None:
-                remaining = response.headers.get("x-ratelimit-remaining-tokens")
-                if remaining is not None and remaining.isdigit():
-                    logger.debug("OpenAI x-ratelimit-remaining-tokens=%s", remaining)
+                left = response.headers.get("x-ratelimit-remaining-tokens")
+                if left is not None and left.isdigit():
+                    logger.debug("OpenAI x-ratelimit-remaining-tokens=%s", left)
                 if response.status_code == 200:
                     try:
                         return response.json()
@@ -495,14 +563,20 @@ class OpenAIProvider:
                 else:
                     code = _error_code(response)
                     error = self._status_error(response, code)
-                    retryable = response.status_code in RETRY_STATUSES and not (
-                        response.status_code == 429 and code in self._quota_codes
+                    status = response.status_code
+                    retryable = (
+                        status in RETRY_STATUSES
+                        and not (method == "POST" and status in NO_RETRY_POST_STATUSES)
+                        and not (status == 429 and code in self._quota_codes)
                     )
 
             assert error is not None  # noqa: S101 - every branch above sets it
             if not retryable or attempt >= self._max_retries:
                 raise error
             delay = self._backoff_s(attempt, response)
+            if self._monotonic() + delay + MIN_ATTEMPT_S > deadline:
+                logger.info("OpenAI %s %s: no time left for a retry", method, path)
+                raise error
             logger.info(
                 "OpenAI %s %s failed (%s); retry %d/%d in %.1f s",
                 method,
@@ -524,8 +598,8 @@ class OpenAIProvider:
         max_output_tokens: int,
         text_format: dict[str, Any] | None,
         usage_sink: list[TokenUsage],
+        deadline: float,
     ) -> _Reply:
-        self._check_budget()
         body: dict[str, Any] = {
             "model": self._model,
             "store": False,
@@ -541,11 +615,18 @@ class OpenAIProvider:
         if text_format is not None:
             body["text"] = {"format": text_format}
 
-        payload = self._request("POST", "/v1/responses", json=body)
-        if not isinstance(payload, dict):
-            raise LLMError("OpenAI response is not a JSON object.")
-        usage = _parse_usage(payload)
-        self._record(usage)
+        # Reserve the worst case under the lock, so concurrent calls cannot overshoot together.
+        estimated_input = len(json.dumps(body, ensure_ascii=False)) // CHARS_PER_TOKEN_ESTIMATE
+        reservation = estimated_input + max_output_tokens
+        self._reserve(reservation)
+        usage: TokenUsage | None = None
+        try:
+            payload = self._request("POST", "/v1/responses", body, deadline=deadline)
+            if not isinstance(payload, dict):
+                raise LLMError("OpenAI response is not a JSON object.")
+            usage = _parse_usage(payload)
+        finally:
+            self._settle(reservation, usage)
         usage_sink.append(usage)
         billing = payload.get("billing")
         logger.info(
@@ -602,8 +683,11 @@ class OpenAIProvider:
         }
         messages = [{"role": "user", "content": user}]
         usage: list[TokenUsage] = []
+        deadline = self._deadline()
         try:
-            content = self._structured_text(system, messages, temperature, text_format, usage)
+            content = self._structured_text(
+                system, messages, temperature, text_format, usage, deadline
+            )
             try:
                 return schema.model_validate_json(content)
             except ValidationError as exc:
@@ -620,7 +704,9 @@ class OpenAIProvider:
                     ),
                 },
             ]
-            content = self._structured_text(system, messages, temperature, text_format, usage)
+            content = self._structured_text(
+                system, messages, temperature, text_format, usage, deadline
+            )
             try:
                 return schema.model_validate_json(content)
             except ValidationError as exc:
@@ -639,6 +725,7 @@ class OpenAIProvider:
         temperature: float,
         text_format: dict[str, Any],
         usage: list[TokenUsage],
+        deadline: float,
     ) -> str:
         reply = self._respond(
             system=system,
@@ -647,13 +734,11 @@ class OpenAIProvider:
             max_output_tokens=self._max_output_tokens,
             text_format=text_format,
             usage_sink=usage,
+            deadline=deadline,
         )
         if reply.incomplete_reason is not None:
             # A cut-off JSON object cannot be repaired by asking again with the same limit.
-            raise LLMOutputError(
-                f"OpenAI output was incomplete ({reply.incomplete_reason}); "
-                "raise OPENAI_MAX_OUTPUT_TOKENS or shorten the input."
-            )
+            raise LLMOutputError(_incomplete_message(reply.incomplete_reason))
         return reply.text
 
     def generate_text(
@@ -670,10 +755,14 @@ class OpenAIProvider:
                 max_output_tokens=max_tokens,
                 text_format=None,
                 usage_sink=usage,
+                deadline=self._deadline(),
             )
         finally:
             self.last_usage = sum(usage, TokenUsage())
-        # A text cut at max_tokens is what the caller asked for.
+        reason = reply.incomplete_reason
+        # A text cut at max_tokens is what the caller asked for; anything else is an error.
+        if reason is not None and (reason != "max_output_tokens" or not reply.text):
+            raise LLMOutputError(_incomplete_message(reason))
         return reply.text
 
     def health(self) -> ProviderHealth:
@@ -686,13 +775,20 @@ class OpenAIProvider:
                 message=message,
             )
 
+        if self.tokens_available_today < self._max_output_tokens:
+            return result(
+                "error",
+                f"OpenAI daily token budget reached ({self.tokens_used_today} of "
+                f"{self._counter.budget} tokens used today; resets at 00:00 UTC).",
+            )
         url = f"{self._base_url}/v1/models/{quote(self._model, safe='')}"
+        timeout = min(self._timeout_s, self._total_timeout_s)
         error: str | None = None
         status: HealthStatus = "error"
         try:
-            response = self._client.get(url, headers=self._headers(), timeout=self._timeout_s)
+            response = self._client.get(url, headers=self._headers(), timeout=timeout)
         except httpx2.TimeoutException:
-            error, status = f"OpenAI did not answer within {self._timeout_s:g} s.", "not_running"
+            error, status = f"OpenAI did not answer within {timeout:g} s.", "not_running"
         except httpx2.ConnectError:
             error, status = "Cannot connect to the OpenAI API.", "not_running"
         except httpx2.HTTPError as exc:

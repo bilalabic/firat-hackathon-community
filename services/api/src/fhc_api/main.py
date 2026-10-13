@@ -59,6 +59,14 @@ def active_llm_model(settings: Settings) -> str:
     return settings.OPENAI_MODEL if _llm_choice(settings) == "openai" else settings.OLLAMA_MODEL
 
 
+def _model_label(llm: LLMProvider, settings: Settings) -> str:
+    """The model the provider actually uses (also for an injected provider)."""
+    model = getattr(llm, "model", None)
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return active_llm_model(settings).strip()
+
+
 def _new_llm(settings: Settings, choice: str) -> OllamaProvider | OpenAIProvider:
     if choice == "openai":
         if settings.OPENAI_API_KEY is None:
@@ -68,6 +76,7 @@ def _new_llm(settings: Settings, choice: str) -> OllamaProvider | OpenAIProvider
             settings.OPENAI_MODEL,
             settings.OPENAI_TIMEOUT_S,
             base_url=settings.OPENAI_BASE_URL,
+            total_timeout_s=settings.OPENAI_TOTAL_TIMEOUT_S,
             reasoning_effort=settings.OPENAI_REASONING_EFFORT.strip().lower(),
             max_output_tokens=settings.OPENAI_MAX_OUTPUT_TOKENS,
             daily_token_budget=settings.OPENAI_DAILY_TOKEN_BUDGET,
@@ -138,7 +147,7 @@ def create_app(
     # evidence and run reads still work.
     if url_import:
         page_loader = page_loader or HtmlPageLoader()
-        extractor = extractor or LLMExtractor(llm, model_label=active_llm_model(settings))
+        extractor = extractor or LLMExtractor(llm, model_label=_model_label(llm, settings))
     importer = UrlImporter(page_loader, extractor)
 
     @asynccontextmanager
