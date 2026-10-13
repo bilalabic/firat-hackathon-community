@@ -240,14 +240,17 @@ def test_sub_events_do_not_replace_the_event() -> None:
         ("2026-11-14T09:00", date(2026, 11, 14)),  # no offset: the date as written
         ("2026-11-14T23:30:00Z", date(2026, 11, 15)),  # 02:30 in Istanbul
         ("2026-11-14T23:30:00.000+00:00", date(2026, 11, 15)),
-        ("2026-11-14T01:00:00-05:00", date(2026, 11, 14)),  # 09:00 in Istanbul
+        # A local offset is the event's own time zone: the date as written, not the
+        # Istanbul date (Devpost lists a US event's 18:30 -04:00 start on that day).
+        ("2026-11-14T01:00:00-05:00", date(2026, 11, 14)),
+        ("2026-10-10T18:30:00.000-04:00", date(2026, 10, 10)),  # 01:30 next day in Istanbul
         ("2026-11-14T00:30:00+03:00", date(2026, 11, 14)),
+        ("2026-11-14T23:30:00+09:00", date(2026, 11, 14)),
         ("14.11.2026", None),
         ("2026-13-01", None),
         ("next Saturday", None),
-        # Shifting to Istanbul would leave the datetime range: OverflowError, ignored.
-        ("9999-12-31T23:00:00-05:00", None),
-        ("0001-01-01T00:00:00+05:00", None),
+        # Shifting UTC to Istanbul would leave the datetime range: OverflowError, ignored.
+        ("9999-12-31T23:00:00Z", None),
     ],
 )
 def test_start_date(raw: str, expected: date | None) -> None:
@@ -414,6 +417,34 @@ def test_application_url_equal_to_the_final_url_is_dropped() -> None:
 # --- text values and the event field rules -----------------------------------------
 
 
+@pytest.mark.parametrize(
+    ("organizer", "url", "kept"),
+    [
+        # The hosting platform of a subdomain page (Devpost) is not the organizer.
+        ({"@type": "Organization", "name": "Devpost, Inc.", "url": "https://devpost.com/"},
+         "https://myhack.devpost.com/", False),
+        ([{"name": "Host Inc.", "url": "https://host.example"}], "https://a.host.example/", False),
+        # The site's own organizer, on its own site, stays.
+        ({"name": "GİRVAK", "url": "https://example.org"}, "https://www.example.org/hack", True),
+        ({"name": "Club A", "url": "https://club.example/a"}, "https://h.club.example/", True),
+        ({"name": "Club A"}, "https://hack.club.example/", True),
+    ],
+)  # fmt: skip
+def test_hosting_platform_is_no_organizer(organizer: Any, url: str, kept: bool) -> None:
+    found = values(parse(jsonld_page(event(organizer=organizer)), url=url))
+
+    assert ("organizer" in found) is kept
+
+
+def test_venue_equal_to_the_city_is_dropped() -> None:
+    location = {"@type": "Place", "name": "İstanbul", "address": {"addressLocality": "istanbul"}}
+
+    found = values(parse(jsonld_page(event(location=location))))
+
+    assert "venue" not in found
+    assert found["city"] == "istanbul"
+
+
 def test_values_failing_the_event_rules_are_dropped() -> None:
     page = parse(jsonld_page(event(name="ab", organizer={"name": "x" * 161})))
 
@@ -520,6 +551,7 @@ def test_long_text_is_truncated() -> None:
 )
 def test_truncation_boundary(monkeypatch: pytest.MonkeyPatch, length: int, truncated: bool) -> None:
     monkeypatch.setattr(trafilatura, "extract", lambda *_, **__: "x" * length)
+    monkeypatch.setattr(page_module, "_page_text", lambda *_: "")
 
     page = parse(jsonld_page())
 
@@ -537,6 +569,160 @@ def test_plain_body_text_is_the_fallback() -> None:
     assert "Kural 9: takımlar en fazla dört kişidir." in page.text
     assert "var x" not in page.text
     assert len(page.text) >= MIN_TEXT_CHARS
+
+
+ARTICLE = "".join(
+    f"<p>Paragraf {i}: Hackathon boyunca takımlar mentorlarla çalışacak, prototiplerini "
+    "geliştirecek ve jüriye sunacak. Etkinlik öğrencilere açık ve deneyim kazandırır.</p>"
+    for i in range(6)
+)
+
+
+def side_page(aside: str, *, head: str = "", before: str = "", after: str = "") -> str:
+    """An article (trafilatura's main text) with page parts next to it."""
+    return (
+        f"<html><head>{head}</head><body>{before}<main><article><h1>Grid Hack</h1>{ARTICLE}"
+        f"</article><aside>{aside}</aside></main>{after}</body></html>"
+    )
+
+
+SIDEBAR = (
+    "<div><div>Ödül Havuzu</div><div>200.000 TL</div></div>"
+    "<ul><li>Team required: 2 to 4 members</li></ul>"
+    "<div><span>Son Başvuru:</span><span>31 Ağustos 2026</span></div>"
+)
+
+
+def test_facts_outside_the_article_are_in_the_text() -> None:
+    text = parse(side_page(SIDEBAR)).text
+
+    assert "Ödül Havuzu\n200.000 TL" in text  # sidebar facts trafilatura leaves out
+    assert "Team required: 2 to 4 members" in text
+    assert "Son Başvuru: 31 Ağustos 2026" in text  # inline parts stay on one line
+    assert text.count("Paragraf 3: Hackathon boyunca") == 1
+
+
+def test_a_timeline_date_keeps_its_label() -> None:
+    steps = "".join(
+        f'<div><span class="date">{day}</span><h4>{label}</h4><p>{note}</p></div>'
+        for day, label, note in [
+            ("3 Ağustos – 7 Eylül", "Başvuru formu", "Formu eksiksiz doldurun."),
+            ("9 – 11 Ekim", "Hackathon", "Yüz yüze final."),
+        ]
+    )
+
+    text = parse(side_page(steps)).text
+
+    assert "3 Ağustos – 7 Eylül\nBaşvuru formu" in text
+
+
+def test_over_the_limit_the_article_comes_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(page_module, "MAX_TEXT_CHARS", 2000)
+    article = "# Grid Hack\n\n" + "\n\n".join(
+        f"Paragraf {i}: Hackathon boyunca takımlar mentorlarla çalışacak, prototiplerini "
+        "geliştirecek ve jüriye sunacak. Etkinlik öğrencilere açık ve deneyim kazandırır."
+        for i in range(6)
+    )
+    monkeypatch.setattr(page_module, "_article_text", lambda *_: article)
+    before = "".join(f"<div>Duyuru {i}: başka etkinliğin haberi.</div>" for i in range(30))
+
+    page = parse(side_page(SIDEBAR, before=before))
+
+    assert page.text.startswith(article + "\n\n")  # the article first
+    assert page.text.count("Paragraf 3: Hackathon boyunca") == 1  # not repeated after it
+    assert "Duyuru 0: başka etkinliğin haberi." in page.text  # then the other page lines
+    assert page.text_truncated
+    assert len(page.text) == 2000
+
+
+def test_menus_and_footers_are_left_out_but_a_hero_header_stays() -> None:
+    markup = side_page(
+        "<p>Sidebar</p>",
+        before="<header><nav><a href='/a'>Ana Sayfa</a> <a href='/b'>Duyurular</a></nav></header>"
+        "<header><p>Hackathon tarihi: 10-12 Ekim 2026</p></header>",
+        after="<footer>Copyright Örnek Kurum</footer>",
+    )
+
+    text = parse(markup).text
+
+    assert "Hackathon tarihi: 10-12 Ekim 2026" in text
+    assert "Duyurular" not in text
+    assert "Copyright" not in text
+
+
+@pytest.mark.parametrize(
+    ("link", "line"),
+    [
+        ('<a href="/hack/apply">Hemen Başvur</a>', "Hemen Başvur (https://example.org/hack/apply)"),
+        (
+            '<a href="https://forms.example.com/f/1">KAYIT FORMU</a>',
+            "(https://forms.example.com/f/1)",
+        ),
+        ('<a href="https://x.jotform.com/26196">Apply Now</a>', "(https://x.jotform.com/26196)"),
+        (
+            '<a href="/hack2026/register">Buraya tıklayın</a>',
+            "(https://example.org/hack2026/register)",
+        ),
+        ('<a href="https://devpost.example/register?c=1">Join hackathon</a>', "(https://devpost"),
+    ],
+)
+def test_registration_links_keep_their_target(link: str, line: str) -> None:
+    assert line in parse(side_page(f"<p>Başvurular açık: {link}</p>")).text
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<a href="/hakkimizda">Hakkımızda</a>',  # not a registration link
+        '<a href="#basvur">Başvur</a>',  # the page itself
+        f'<a href="{PAGE_URL}/">Başvur</a>',
+        '<a href="javascript:void(0)">Başvur</a>',
+        '<a href="mailto:hack@example.org">Başvur</a>',
+    ],
+)
+def test_other_links_keep_no_target(link: str) -> None:
+    text = parse(side_page(f"<p>Bağlantı: {link}</p>")).text
+
+    assert "(http" not in text
+    assert "javascript" not in text and "mailto" not in text
+
+
+def test_a_menu_apply_link_is_kept_but_account_links_are_not() -> None:
+    menu = (
+        "<nav><a href='https://secure.example.com/users/register'>Sign up</a>"
+        "<a href='/login'>Kayıt ol</a>"
+        "<a href='https://x.jotform.com/26196'>Apply Now</a></nav>"
+    )
+
+    text = parse(side_page("<p>Sidebar</p>", before=f"<header>{menu}</header>")).text
+
+    assert "Apply Now (https://x.jotform.com/26196)" in text
+    assert "users/register" not in text
+    assert "/login" not in text
+
+
+def test_a_menu_entry_about_applications_in_general_is_left_out() -> None:
+    menu = "<nav><a href='/uyeler/basvuru-dokumanlari'>Başvuru Dokümanları</a></nav>"
+
+    text = parse(side_page("<p>Sidebar</p>", before=f"<header>{menu}</header>")).text
+
+    assert "basvuru-dokumanlari" not in text
+
+
+@pytest.mark.parametrize(
+    "href", ["/kayitol", "/uye-ol?next=/hack", "https://secure.example.com/users/register"]
+)
+def test_site_account_links_keep_no_target(href: str) -> None:
+    text = parse(side_page(f'<p>Hesap: <a href="{href}">Kayıt ol</a></p>')).text
+
+    assert "(http" not in text
+
+
+def test_link_targets_are_page_content_for_the_evidence_check() -> None:
+    # The target is written into PageContent.text, the text evidence is checked against.
+    page = parse(side_page('<a href="/hack/apply">Başvuru formu</a>'))
+
+    assert "https://example.org/hack/apply" in page.text
 
 
 def test_short_page_has_no_readable_content() -> None:

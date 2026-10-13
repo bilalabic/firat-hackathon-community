@@ -2,7 +2,8 @@
 
     SafeFetcher (HTML only) ─► decode (BOM, HTTP charset, <meta charset>, UTF-8, cp1254)
         ─► selectolax: JSON-LD schema.org/Event, OpenGraph/<meta> ─► structured values
-        ─► trafilatura main text (Markdown), else the plain body text ─► PageContent
+        ─► trafilatura main text (Markdown), then the page lines it left out (sidebars,
+           info boxes; registration links with their target) ─► PageContent
 
 Structured values are deterministic and pass the event field rules (`EventUpdate`); a
 value that does not is dropped here, so the extractor never sees it. The page is
@@ -16,10 +17,10 @@ import json
 import logging
 import re
 from collections.abc import Callable, Iterator
-from datetime import UTC, date, datetime
+from datetime import UTC, date, datetime, timedelta
 from decimal import Decimal, InvalidOperation
 from typing import Any, Literal, cast
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 from zoneinfo import ZoneInfo
 
 import trafilatura
@@ -302,8 +303,8 @@ def _map_event(
             found[field] = proposal
 
     put("title", _clean_text(event.get("name")), event.get("name"))
-    organizer = _first_name(event.get("organizer"))
-    put("organizer", organizer, event.get("organizer"))
+    if not _is_hosting_platform(event.get("organizer"), base_url):
+        put("organizer", _first_name(event.get("organizer")), event.get("organizer"))
     put("summary", _short_summary(event.get("description")), event.get("description"))
     for field, key in (("start_date", "startDate"), ("end_date", "endDate")):
         put(cast(ExtractableField, field), _event_date(event.get(key)), event.get(key))
@@ -313,9 +314,31 @@ def _map_event(
     _map_offers(event, put, page_urls, base_url)
     # Platforms (e.g. Devpost) fill `Place.name` with the event name: that is no venue.
     venue, title = found.get("venue"), found.get("title")
-    if venue and title and fold_title(str(venue.value)) == fold_title(str(title.value)):
+    # A `Place.name` that is only the city ("İstanbul") is no venue either.
+    city = found.get("city")
+    if venue and any(
+        other and fold_title(str(venue.value)) == fold_title(str(other.value))
+        for other in (title, city)
+    ):
         del found["venue"]
     return found
+
+
+def _is_hosting_platform(raw: object, base_url: str) -> bool:
+    """True when the organizer is the platform the page is hosted on: its `url` is the
+    site of a parent domain of the page host (an organizer "Devpost, Inc." with
+    https://devpost.com/ on https://myhack.devpost.com/). The real organizer is then in the
+    page text, for the LLM."""
+    host = (urlsplit(base_url).hostname or "").lower().removeprefix("www.")
+    for item in raw if isinstance(raw, list) else [raw]:
+        url = item.get("url") if isinstance(item, dict) else None
+        if not isinstance(url, str):
+            continue
+        parts = urlsplit(url.strip())
+        organizer_host = (parts.hostname or "").lower().removeprefix("www.")
+        if organizer_host and host.endswith(f".{organizer_host}") and parts.path in ("", "/"):
+            return True
+    return False
 
 
 type _Put = Callable[[ExtractableField, object, object], None]
@@ -409,13 +432,15 @@ def _short_summary(raw: object) -> str | None:
 
 
 def _event_date(raw: object) -> date | None:
-    """ISO 8601 date or date-time. With an offset, the calendar date in Europe/Istanbul
-    (the date the event is listed under); without one, the date as written."""
+    """ISO 8601 date or date-time, as the calendar date the page lists. A local offset
+    ("2026-10-10T18:30-04:00") is the event's own time zone: the date as written. UTC ("Z",
+    "+00:00") is usually a server serialization: the date in Europe/Istanbul. Without an
+    offset, the date as written."""
     if not isinstance(raw, str):
         return None
     try:
         parsed = datetime.fromisoformat(raw.strip())
-        if parsed.tzinfo is not None:
+        if parsed.utcoffset() == timedelta(0):
             parsed = parsed.astimezone(ZoneInfo(DEFAULT_TIMEZONE))
     except (ValueError, OverflowError):  # OverflowError: shifted past year 1 or 9999
         return None
@@ -473,7 +498,58 @@ def _title_tag(tree: LexborHTMLParser) -> str | None:
 
 
 def _main_text(markup: str, url: str) -> tuple[str, bool]:
-    text = (
+    """The visible page text in page order when it fits in MAX_TEXT_CHARS; else the
+    trafilatura article text first, then the page lines it left out, cut at the limit.
+
+    Event pages keep key facts outside the article: sidebars ("Ödül Havuzu 200.000 TL",
+    "Team required: 2 to 4 members"), info boxes, timelines whose dates sit in a <span> next
+    to the step ("3 Ağustos – 7 Eylül" / "Başvuru formu"). trafilatura drops those parts,
+    so the article alone misses them; in page order a date keeps its label."""
+    page_text = _page_text(markup, url)
+    if MIN_TEXT_CHARS <= len(page_text) <= MAX_TEXT_CHARS:
+        return page_text, False
+    main = _article_text(markup, url)
+    page_lines = page_text.splitlines()
+    main_lines = {_line_key(line) for line in main.splitlines()}
+    main_key = _line_key(main)
+    extra: list[str] = []
+    seen: set[str] = set()
+    for line in page_lines:
+        key = _line_key(line)
+        if not key or key in main_lines or key in seen:
+            continue
+        if len(key) >= _CONTAINED_LINE_CHARS and key in main_key:
+            continue  # the article has it, wrapped or split differently
+        if len(key) >= _REPEATED_LINE_CHARS:
+            seen.add(key)  # menus and cards repeat; short labels ("Online") may recur
+        extra.append(line)
+    text = "\n\n".join(part for part in (main, "\n".join(extra)) if part)
+    if len(text) < MIN_TEXT_CHARS:
+        raise PageError(
+            "no readable content: the page has almost no text without a browser; "
+            "the page may need JavaScript"
+        )
+    if len(text) > MAX_TEXT_CHARS:
+        return text[:MAX_TEXT_CHARS], True
+    return text, False
+
+
+# A page line at least this long that occurs inside the article text is a duplicate.
+_CONTAINED_LINE_CHARS = 30
+# Page lines at least this long are kept once; shorter ones (labels, values) every time.
+_REPEATED_LINE_CHARS = 20
+_LINE_MARKUP = str.maketrans(dict.fromkeys("*_#>|`", " "))
+
+
+def _line_key(line: str) -> str:
+    """Comparison form of a text line: Markdown markup and list markers removed, case and
+    whitespace folded."""
+    key = " ".join(line.translate(_LINE_MARKUP).split()).casefold()
+    return key.removeprefix("- ").strip()
+
+
+def _article_text(markup: str, url: str) -> str:
+    return (
         trafilatura.extract(
             markup,
             url=url,
@@ -487,27 +563,91 @@ def _main_text(markup: str, url: str) -> tuple[str, bool]:
         )
         or ""
     ).strip()
-    if len(text) < MIN_TEXT_CHARS:
-        fallback = _body_text(markup)
-        text = fallback if len(fallback) > len(text) else text
-    if len(text) < MIN_TEXT_CHARS:
-        raise PageError(
-            "no readable content: the page has almost no text without a browser; "
-            "the page may need JavaScript"
-        )
-    if len(text) > MAX_TEXT_CHARS:
-        return text[:MAX_TEXT_CHARS], True
-    return text, False
 
 
-def _body_text(markup: str) -> str:
-    """Plain visible text of <body>, scripts and styles removed (trafilatura fallback).
-    A fresh tree: the one used for JSON-LD and meta tags stays untouched."""
+# Elements that start a new line in the page text. Table cells stay on their row's line
+# ("1st Place | $500"), inline elements (span, a, strong) on their block's line.
+_BLOCK_TAGS = (
+    "address", "article", "aside", "blockquote", "br", "dd", "details", "dialog", "div",
+    "dl", "dt", "fieldset", "figcaption", "figure", "form", "h1", "h2", "h3", "h4", "h5",
+    "h6", "header", "hr", "li", "main", "ol", "p", "pre", "section", "summary", "table",
+    "tr", "ul",
+)  # fmt: skip
+# Site chrome: menus and footers carry account links ("Sign up") and other pages' news.
+# A <header> counts as chrome only when it holds a menu; a page hero stays.
+_CHROME_SELECTORS = ("header:has(nav)", "nav", "[role=navigation]", "footer")
+# Link texts (folded, word prefixes) and URL path words that mark a registration link.
+_APPLY_WORDS = ("basvur", "kayit", "kaydol", "register", "registration", "apply", "rsvp")
+_APPLY_PHRASES = ("sign up", "join hackathon", "join the hackathon", "join now")
+_APPLY_PATH_RE = re.compile(
+    r"(?:^|[/._=&?-])(?:apply|application|register|registration|signup|basvuru|basvur|kayit"
+    r"|forms?)(?:$|[/._=&?-])"
+)
+# In a menu only a call to apply counts ("Apply Now", "Hemen Başvur", "Başvuru Formu"), not
+# a menu entry about applications in general ("Başvuru Dokümanları", "Başvurular").
+_MENU_APPLY_RE = re.compile(
+    r"\b(?:apply|basvur|basvurun|basvuru (?:yap|formu|form))\b|\bbasvuruyu tamamla"
+)
+# Path segments of site account pages: "Kayıt ol" or "Sign up" for the site, not the event.
+_ACCOUNT_PATH_RE = re.compile(
+    r"(?:^|/)(?:kayitol|kayit-ol|uyeol|uye-ol|uyelik|signup|sign-up|sign_up|login|giris"
+    r"|account|accounts|users?|auth)(?:$|/)"
+)
+_FOLDED_WORD_RE = re.compile(r"[a-z]+")
+_MAX_LINK_CHARS = 500  # events.application_url
+
+
+def _page_text(markup: str, url: str) -> str:
+    """Visible text of <body>, one line per block element, without scripts, styles and site
+    chrome. Registration links keep their target: "Hemen Başvur (https://…/apply)", so the
+    application URL is on the page text the extractor checks evidence against. A fresh
+    tree: the one used for JSON-LD and meta tags stays untouched."""
     tree = LexborHTMLParser(markup)
     tree.strip_tags(["script", "style", "noscript", "template", "svg"], recursive=True)
-    raw = tree.body.text(separator="\n") if tree.body is not None else ""
-    lines = (" ".join(line.split()) for line in raw.splitlines())
-    return "\n".join(line for line in lines if line)
+    if tree.body is None:
+        return ""
+    page_urls = {normalize_url(url)}
+    # A menu's "Apply Now" / "Başvur" button is often the only application link: kept as a
+    # line at the end. Other menu links are not.
+    menu_links: list[str] = []
+    for selector in _CHROME_SELECTORS:
+        for node in tree.body.css(selector):
+            for anchor in node.css("a[href]"):
+                text = " ".join(anchor.text(deep=True).split())
+                target = _registration_target(text, anchor.attributes.get("href"), url)
+                folded = " ".join(_FOLDED_WORD_RE.findall(fold_turkish(text)))
+                if target and not _same_page(target, page_urls) and _MENU_APPLY_RE.search(folded):
+                    menu_links.append(f"{text} ({target})")
+            node.decompose()
+    for anchor in tree.body.css("a[href]"):
+        target = _registration_target(anchor.text(deep=True), anchor.attributes.get("href"), url)
+        if target and not _same_page(target, page_urls):
+            anchor.insert_after(f" ({target}) ")
+    for node in tree.body.css(",".join(_BLOCK_TAGS)):
+        node.insert_before("\n")
+        node.insert_after("\n")
+    raw = tree.body.text(separator=" ")
+    lines = [" ".join(line.split()) for line in raw.splitlines()]
+    return "\n".join(line for line in lines + menu_links if line)
+
+
+def _registration_target(text: str, href: str | None, base_url: str) -> str | None:
+    """The absolute URL of a link that reads like a registration or application link; not
+    a site account page."""
+    target = _absolute_http_url(href, base_url)
+    if target is None or len(target) > _MAX_LINK_CHARS:
+        return None
+    path = fold_turkish(urlsplit(target).path)
+    if _ACCOUNT_PATH_RE.search(path):
+        return None
+    folded = " ".join(_FOLDED_WORD_RE.findall(fold_turkish(text)))
+    if (
+        any(word.startswith(_APPLY_WORDS) for word in folded.split())
+        or any(phrase in folded for phrase in _APPLY_PHRASES)
+        or _APPLY_PATH_RE.search(path) is not None
+    ):
+        return target
+    return None
 
 
 # --- values -------------------------------------------------------------------------

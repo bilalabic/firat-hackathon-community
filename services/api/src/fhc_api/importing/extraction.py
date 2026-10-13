@@ -20,6 +20,7 @@ from typing import Annotated
 from pydantic import BaseModel, Field, ValidationError
 
 from fhc_api.common.clock import today_in
+from fhc_api.common.normalize import normalize_url
 from fhc_api.events.models import DEFAULT_TIMEZONE, EventFormat, EventUpdate
 from fhc_api.importing.evidence import (
     check_date,
@@ -261,6 +262,10 @@ def _check_output(
         if value is None:  # blank text: nothing proposed
             continue
 
+        if name == "application_url" and _is_page_url(value, page):
+            flag(name, "invalid", "Dropped the LLM value: the URL is the imported page itself.")
+            continue
+
         snippet = (item.snippet or "").strip()
         reason = _unusable(snippet, page_key)
         supported: tuple[FieldValue, bool] | None = None
@@ -271,14 +276,17 @@ def _check_output(
                 reason = str(exc)
         # The model's quote is missing or does not hold up: look for a page line that
         # supports the value under the same rules. The summary is the model's own sentence,
-        # so it has no page line to find.
-        if supported is None and name != "summary":
+        # so it has no page line to find. A date whose quote has no year ("13-14 Mayıs")
+        # also looks for a line that states the model's full date ("13-14 Mayıs 2026"):
+        # a year from the page beats one inferred from the fetch date.
+        year_missing = supported is not None and supported[1]
+        if (supported is None or year_missing) and name != "summary":
             if spans is None:
                 spans = evidence_spans(page_text)
             located = _locate(name, value, spans, fetch_date)
-            if located is not None:
+            if located is not None and (supported is None or located[1] == (value, False)):
                 snippet, supported = located
-            else:
+            elif supported is None:
                 reason = f"{reason}, and no page line supports the value"
         if supported is None:
             flag(name, "unsupported", f"Dropped the LLM value: {reason}.")
@@ -290,6 +298,12 @@ def _check_output(
         if inferred:
             checked.year_inferred.add(name)
     return checked
+
+
+def _is_page_url(value: FieldValue, page: PageContent) -> bool:
+    """The imported page is the event page, not its application form."""
+    pages = {normalize_url(page.requested_url), normalize_url(page.final_url)}
+    return isinstance(value, str) and normalize_url(value) in pages
 
 
 class _InvalidValue(ValueError):
@@ -496,6 +510,18 @@ def _apply_rules(
             drop("end_date", detail)
         else:
             drop("application_deadline", detail)
+
+    # `currency` is the prize pool's currency: without a pool it describes nothing (a grant,
+    # a fee or one first prize mentioned in passing). A structured currency stays.
+    if "currency" in fields and "prize_pool" not in fields and is_llm("currency"):
+        drop("currency", "Dropped: a currency without a prize pool.")
+
+    # An online event has no place: an LLM city, venue or country is about something else
+    # ("Türkiye'nin en büyük ...", "US only" eligibility). Structured values stay.
+    if value("format") == "online":
+        for name in ("city", "venue", "country"):
+            if name in fields and is_llm(name):
+                drop(name, "Dropped: the event is online, so it has no place.")
 
     team_min, team_max = value("team_min"), value("team_max")
     if isinstance(team_min, int) and isinstance(team_max, int) and team_min > team_max:

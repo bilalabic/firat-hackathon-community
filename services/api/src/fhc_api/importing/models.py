@@ -69,7 +69,8 @@ class PageContent:
     final_url: str  # after redirects
     fetched_at: datetime
     title: str | None  # og:title, else <title>
-    # Main text for the LLM (trafilatura, Markdown), at most MAX_TEXT_CHARS. Evidence
+    # Text for the LLM: the trafilatura main text (Markdown), then the page lines it left
+    # out, registration links as "text (URL)"; at most MAX_TEXT_CHARS. Evidence
     # snippets are checked against this text (normalized: case, whitespace, Unicode NFKC).
     text: str
     structured: dict[ExtractableField, StructuredValue] = field(default_factory=dict)

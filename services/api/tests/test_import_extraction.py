@@ -595,12 +595,13 @@ def test_derived_fields_without_a_keyword_are_dropped() -> None:
             format=("online", "Etkinlik Elazığ'da yapılacak."),
             country=("TR", "Etkinlik Elazığ'da yapılacak."),
             is_free=(True, "Toplam ödül 50.000 TL."),
+            prize_pool=(50000, "Toplam ödül 50.000 TL."),
             currency=("TRY", "Toplam ödül 50.000 TL."),
         ),
         page=page,
     )
 
-    assert values(result) == {"currency": "TRY"}
+    assert values(result) == {"prize_pool": Decimal(50000), "currency": "TRY"}
     assert kinds(result) == {
         "format": "unsupported",
         "country": "unsupported",
@@ -786,3 +787,220 @@ def test_a_value_joined_from_several_lines_falls_back_to_a_line_that_has_it() ->
     assert kept.fields["venue"].snippet == "Atatürk Kültür Merkezi, Muğla"
     assert dropped.fields == {}
     assert kinds(dropped) == {"venue": "unsupported"}
+
+
+# -- fixes from the benchmark error analysis (docs/research/LLM_BENCHMARK.md) ----------------
+
+
+def test_a_year_on_the_page_beats_an_inferred_one() -> None:
+    # The model quotes the day range without its year; read in October, "13-14 Mayıs" alone
+    # would be next May. The page states the year elsewhere: that year wins.
+    page = make_page("# VBT Hackathon\n\nEtkinlik 13-14 Mayıs 2026 tarihlerinde, Muğla'da.\n")
+
+    result = extract(
+        output(
+            start_date=("2026-05-13", "Etkinlik 13-14 Mayıs"),
+            end_date=("2026-05-14", "Etkinlik 13-14 Mayıs"),
+        ),
+        page=page,
+    )
+
+    assert values(result) == {"start_date": date(2026, 5, 13), "end_date": date(2026, 5, 14)}
+    assert (
+        result.fields["start_date"].snippet == "Etkinlik 13-14 Mayıs 2026 tarihlerinde, Muğla'da."
+    )
+
+
+def test_without_a_year_on_the_page_the_fetch_date_still_decides() -> None:
+    page = make_page("# Kış Hackathonu\n\nEtkinlik 13-14 Mayıs tarihlerinde yapılacak.\n")
+
+    result = extract(output(start_date=("2026-05-13", "Etkinlik 13-14 Mayıs")), page=page)
+
+    assert values(result) == {"start_date": date(2027, 5, 13)}
+
+
+@pytest.mark.parametrize(
+    "url", ["https://example.org/hackathon", "https://www.example.org/hackathon/?utm_source=x"]
+)
+def test_the_page_itself_is_no_application_url(url: str) -> None:
+    page = make_page(f"{PAGE_TEXT}\nEtkinlik sayfası: {url}\n")
+
+    result = extract(output(application_url=(url, f"Etkinlik sayfası: {url}")), page=page)
+
+    assert "application_url" not in values(result)
+    assert kinds(result) == {"application_url": "invalid"}
+
+
+def test_a_link_target_from_the_loader_is_application_url_evidence() -> None:
+    page = make_page(f"{PAGE_TEXT}\nHemen Başvur (https://example.org/hackathon/apply)\n")
+    url = "https://example.org/hackathon/apply"
+
+    result = extract(output(application_url=(url, "Hemen Başvur")), page=page)
+
+    assert values(result) == {"application_url": url}
+    assert result.fields["application_url"].snippet == f"Hemen Başvur ({url})"
+
+
+def test_a_currency_without_a_prize_pool_is_dropped() -> None:
+    page = make_page("# Hack\n\nBirinci olan takıma 70.000 TL verilecektir, diğerlerine hediye.\n")
+
+    result = extract(output(currency=("TRY", "Birinci olan takıma 70.000 TL")), page=page)
+
+    assert values(result) == {}
+    assert kinds(result) == {"currency": "rule_violation"}
+
+
+def test_a_structured_currency_without_a_prize_pool_stays() -> None:
+    page = make_page(currency=StructuredValue("EUR", "jsonld", "EUR"))
+
+    assert values(extract(output(), page=page)) == {"currency": "EUR"}
+
+
+def test_values_inside_a_long_sentence_are_located() -> None:
+    # One sentence over SPAN_MAX_CHARS: the fallback looks at word windows of it.
+    sentence = (
+        "Ülkemizdeki tüm üniversite öğrencilerine yönelik olarak Sivas Bilim ve Teknoloji "
+        "Üniversitesi ile Yandex Türkiye iş birliğinde düzenlenen ve Anadolu Üniversiteler "
+        "Birliğince de desteklenen Anadolu Hackathon yarışmasının başvuruları 8 Nisan 2026 "
+        "tarihine kadar resmi internet sitesi üzerinden (https://hackaton.example.edu.tr) "
+        "yapılabilecektir."
+    )
+    assert len(sentence) > evidence.SPAN_MAX_CHARS
+    page = make_page(f"# Anadolu Hackathon\n\n{sentence}\n")
+
+    result = extract(
+        output(
+            application_deadline=("2026-04-08", None),
+            application_url=("https://hackaton.example.edu.tr", None),
+        ),
+        page=page,
+    )
+
+    assert values(result) == {
+        "application_deadline": date(2026, 4, 8),
+        "application_url": "https://hackaton.example.edu.tr",
+    }
+    assert all(len(p.snippet or "") <= evidence.SPAN_MAX_CHARS for p in result.fields.values())
+
+
+def test_word_windows_cover_every_short_stretch() -> None:
+    words = [f"kelime{i:03d}" for i in range(120)]
+    sentence = " ".join(words)
+
+    windows = evidence.evidence_spans(sentence)
+
+    assert all(len(window) <= evidence.SPAN_MAX_CHARS for window in windows)
+    for start in range(len(words) - 10):
+        stretch = " ".join(words[start : start + 10])
+        assert any(stretch in window for window in windows)
+
+
+@pytest.mark.parametrize(
+    ("value", "snippet", "expected"),
+    [
+        (True, "Zero participation fee to register", True),
+        (True, "Etkinliğimiz tamamen ücretsizdir", True),
+        (True, "başvuru tamamen ücretsizdir", True),
+        (True, "The hackathon is free to attend", True),
+        (True, "Feel free to reach out to the organizers", False),
+        (True, "Free food, swag and API credits for every hacker", False),
+        (True, "%100 Ücretsiz & Online IBM Sertifikalı AI Agents Bootcamp", False),
+        (False, "We will provide paid API credits to all teams", False),
+        (False, "Katılım ücreti 100 TL", True),
+    ],
+)
+def test_free_or_fee_must_be_about_taking_part(value: bool, snippet: str, expected: bool) -> None:
+    assert evidence.supports_is_free(value, snippet) is expected
+
+
+@pytest.mark.parametrize(
+    ("value", "snippet", "expected"),
+    [
+        (Decimal(225000), "₹2,25,000 total prize pool", True),  # Indian grouping (lakh)
+        (Decimal(12500000), "Prize pool: INR 1,25,00,000", True),  # crore
+        (Decimal(200000), "Ödül Havuzu 200.000 TL", True),
+        (Decimal(39500), "$ 39,500 in cash", True),
+    ],
+)
+def test_prize_amount_formats(value: Decimal, snippet: str, expected: bool) -> None:
+    assert evidence.mentions_amount(value, snippet) is expected
+
+
+@pytest.mark.parametrize(
+    ("code", "snippet", "expected"),
+    [
+        ("INR", "₹2,25,000 total prize pool", True),
+        ("INR", "Prize pool in Indian rupees", True),
+        ("USD", "₹2,25,000 total prize pool", False),
+    ],
+)
+def test_rupee_is_a_currency(code: str, snippet: str, expected: bool) -> None:
+    assert evidence.supports_currency(code, snippet) is expected
+
+
+@pytest.mark.parametrize(
+    ("code", "snippet", "expected"),
+    [
+        ("IT", "Via Vincenzo Vela, 21, 10128 Torino TO, Italy", True),
+        ("IT", "Etkinlik İtalya'da yapılacak", True),
+        ("IN", "Gwalior, Madhya Pradesh 474006, India", True),
+        ("IN", "Indianapolis, Indiana", False),  # English names are whole words
+        ("IN", "Hindistan'dan katılımcılar", True),  # Turkish names take suffixes
+        ("ES", "Madrid, Spain", True),
+    ],
+)
+def test_more_country_names(code: str, snippet: str, expected: bool) -> None:
+    assert evidence.supports_country(code, snippet) is expected
+
+
+@pytest.mark.parametrize(
+    "snippet",
+    [
+        "Store millions of events on free-tier cloud instances",
+        "free food, merch, stickers, and swag!",
+        "Beginner friendly: feel free to join our Discord",
+    ],
+)
+def test_free_perks_say_nothing_about_the_fee(snippet: str) -> None:
+    assert not evidence.supports_is_free(True, snippet)
+    assert not evidence.supports_is_free(False, snippet)
+
+
+def test_an_online_event_keeps_no_llm_place() -> None:
+    page = make_page(
+        "# Hack\n\nEtkinlik tamamen online olarak yapılacak.\n"
+        "Türkiye'nin en büyük elektrik dağıtım ağlarından birinin problemleri üzerine.\n"
+    )
+
+    result = extract(
+        output(
+            format=("online", "tamamen online olarak yapılacak"),
+            country=("TR", "Türkiye'nin en büyük elektrik dağıtım ağlarından"),
+        ),
+        page=page,
+    )
+
+    assert values(result) == {"format": "online"}
+    assert kinds(result) == {"country": "rule_violation"}
+
+
+def test_an_online_event_keeps_a_structured_place() -> None:
+    page = make_page(
+        format=StructuredValue("online", "jsonld", "OnlineEventAttendanceMode"),
+        country=StructuredValue("TR", "jsonld", "TR"),
+    )
+
+    assert values(extract(output(), page=page)) == {"format": "online", "country": "TR"}
+
+
+@pytest.mark.parametrize(
+    ("snippet", "expected"),
+    [
+        ("Her takım 6 dk sunum: 3 dk proje + 1 dk demo", False),  # "1" is not a team size
+        ("Başvurular bireysel veya takım olarak yapılabilir", True),
+        ("Join individually or as a team", True),
+        ("Takımlar 1 kişi ile 4 kişi arasında olabilir", True),
+    ],
+)
+def test_a_team_of_one_needs_a_solo_word(snippet: str, expected: bool) -> None:
+    assert evidence.mentions_team_size(1, snippet) is expected

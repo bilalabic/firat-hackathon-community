@@ -116,20 +116,46 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?])\s+")
 
 
 def evidence_spans(text: str) -> list[str]:
-    """Page lines (long lines split into sentences) of at most SPAN_MAX_CHARS, in page order,
-    without instruction-like lines and spans too short to be evidence."""
+    """Page lines (long lines split into sentences, long sentences into overlapping word
+    windows) of at most SPAN_MAX_CHARS, in page order, without instruction-like lines and
+    spans too short to be evidence."""
     spans: list[str] = []
     for line in text.splitlines():
         line = line.strip()
         if not line or looks_like_instruction(line):
             continue
         parts = [line] if len(line) <= SPAN_MAX_CHARS else _SENTENCE_END_RE.split(line)
-        spans += [
-            part.strip()
-            for part in parts
-            if len(part.strip()) <= SPAN_MAX_CHARS and long_enough(part)
-        ]
+        for part in parts:
+            part = part.strip()
+            windows = [part] if len(part) <= SPAN_MAX_CHARS else _word_windows(part)
+            spans += [window for window in windows if long_enough(window)]
     return spans
+
+
+def _word_windows(sentence: str) -> list[str]:
+    """Windows of whole words, at most SPAN_MAX_CHARS each, starting every half window: any
+    stretch of up to SPAN_MAX_CHARS / 2 characters lies whole inside one window."""
+    words = sentence.split()
+    windows: list[str] = []
+    start = 0
+    while start < len(words):
+        end, length = start, 0
+        while end < len(words) and length + len(words[end]) + (end > start) <= SPAN_MAX_CHARS:
+            length += len(words[end]) + (end > start)
+            end += 1
+        if end == start:  # one word longer than a window: not evidence
+            start += 1
+            continue
+        windows.append(" ".join(words[start:end]))
+        if end == len(words):
+            break
+        # Next window starts at the first word past the half of this one.
+        half, step = 0, start
+        while step < end and half < SPAN_MAX_CHARS // 2:
+            half += len(words[step]) + 1
+            step += 1
+        start = max(step, start + 1)
+    return windows
 
 
 # -- keywords: format, fee, currency, country ------------------------------------------------
@@ -153,17 +179,53 @@ def supports_format(value: str, snippet: str) -> bool:
     return keywords is not None and keywords.search(text) is not None
 
 
-_NEGATIONS = frozenset({"no", "not", "without", "yok", "alinmaz", "alinmayacak", "alinmamaktadir"})
+_NEGATIONS = frozenset(
+    {"no", "not", "without", "zero", "yok", "alinmaz", "alinmayacak", "alinmamaktadir"}
+)
+# "Free" and "fee" count only when they are about taking part. Turkish: "ücretsiz", "ücret"
+# within a few words of "katılım", "başvuru", "etkinlik" ("Etkinliğimiz tamamen
+# ücretsizdir", "katılım ücreti"). English, where "free" is everywhere ("feel free", "free
+# food", "free-tier credits"): fixed phrases ("participation is free", "free to attend",
+# "free of charge", "registration fee").
+_PARTICIPATION_PREFIXES = (
+    "katil", "basvur", "kayit", "etkinlik", "etkinlig", "yarisma", "hackathon", "giris",
+)  # fmt: skip
+_PARTICIPATION_WINDOW = 3  # words between "ücretsiz"/"ücret" and the participation word
+_TAKING_PART = r"(?:join|enter|participate|attend|register|apply|take part)"
+_FREE_EN_RE = re.compile(
+    rf"(?<!feel )\bfree (?:to {_TAKING_PART}\b|of charge\b|(?:entry|admission|registration"
+    r"|participation)\b)"
+    r"|\b(?:participation|entry|admission|registration|attendance|tickets?|event|hackathon"
+    r"|competition|joining|attending|participating) (?:is|are) "
+    r"(?:(?:completely|totally|entirely|absolutely|100%) )?free\b"
+)
+_FEE_EN_RE = re.compile(
+    r"\b(?:participation|entry|registration|admission|attendance|application|ticket) fees?\b"
+    rf"|\bfees? (?:to {_TAKING_PART}|for (?:participation|registration|entry))\b"
+)
 
 
 def supports_is_free(value: bool, snippet: str) -> bool:
-    """ "ücretsiz", "free" support True; "ücret", "fee" support False unless negated
-    ("ücret alınmaz", "no fee"), which supports True."""
-    words = _WORD_RE.findall(fold_turkish(match_key(snippet)))
-    free = any(w.startswith("ucretsiz") or w in ("free", "bedava") for w in words)
-    fee = any(
-        (w.startswith("ucret") and not w.startswith("ucretsiz")) or w in ("fee", "fees", "paid")
-        for w in words
+    """A free-to-take-part phrase supports True; a fee phrase supports False unless negated
+    ("ücret alınmaz", "no registration fee", "zero participation fee"), which supports True.
+    See _PARTICIPATION_PREFIXES for what counts as about taking part."""
+    text = fold_turkish(match_key(snippet))
+    words = _WORD_RE.findall(text)
+
+    def tied(index: int) -> bool:
+        low, high = max(0, index - _PARTICIPATION_WINDOW), index + _PARTICIPATION_WINDOW + 1
+        return any(
+            w.startswith(_PARTICIPATION_PREFIXES)
+            for i, w in enumerate(words[low:high], start=low)
+            if i != index
+        )
+
+    free = _FREE_EN_RE.search(text) is not None or any(
+        (w.startswith("ucretsiz") or w == "bedava") and tied(i) for i, w in enumerate(words)
+    )
+    fee = _FEE_EN_RE.search(text) is not None or any(
+        w.startswith("ucret") and not w.startswith("ucretsiz") and tied(i)
+        for i, w in enumerate(words)
     )
     negated = fee and any(w in _NEGATIONS for w in words)
     if value:
@@ -176,6 +238,7 @@ _CURRENCY_MARKERS: dict[str, tuple[frozenset[str], str]] = {
     "USD": (frozenset({"usd", "dolar", "dollar", "dollars"}), "$"),
     "EUR": (frozenset({"eur", "euro", "avro"}), chr(0x20AC)),  # €
     "GBP": (frozenset({"gbp", "sterlin", "pound", "pounds"}), chr(0xA3)),  # £
+    "INR": (frozenset({"inr", "rupee", "rupees", "rupi"}), chr(0x20B9)),  # ₹
 }
 _CURRENCY_WORDS = frozenset().union(*(words for words, _ in _CURRENCY_MARKERS.values()))
 _CURRENCY_SYMBOLS = "".join(symbol for _, symbol in _CURRENCY_MARKERS.values())
@@ -190,17 +253,49 @@ def supports_currency(code: str, snippet: str) -> bool:
     return bool(words & marker_words) or (bool(symbol) and symbol in text)
 
 
-# Folded names (a word prefix, so "Türkiye'de" and "Almanya'da" match). Small on purpose:
-# the import is mostly Turkish events; other countries need the ISO code on the page.
-_COUNTRY_NAMES: dict[str, tuple[str, ...]] = {
-    "TR": ("turkiye", "turkey"),
-    "AZ": ("azerbaycan", "azerbaijan"),
-    "DE": ("almanya", "germany", "deutschland"),
-    "FR": ("fransa", "france"),
-    "GB": ("ingiltere", "england", "united kingdom", "birlesik krallik"),
-    "GR": ("yunanistan", "greece"),
-    "NL": ("hollanda", "netherlands"),
-    "US": ("abd", "usa", "united states", "amerika"),
+# Country names, folded. Turkish names match as a word prefix ("Türkiye'de", "Almanyada");
+# English names as whole words ("India", not "Indiana"). The countries events on the import
+# list come from; others need the ISO code on the page. Ambiguous names are left out
+# ("Georgia" is also a US state, "mısır" is also corn).
+_COUNTRY_NAMES: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {
+    "TR": (("turkiye",), ("turkey",)),
+    "AZ": (("azerbaycan",), ("azerbaijan",)),
+    "DE": (("almanya",), ("germany", "deutschland")),
+    "FR": (("fransa",), ("france",)),
+    "GB": (("ingiltere", "birlesik krallik"), ("england", "united kingdom", "uk")),
+    "GR": (("yunanistan",), ("greece",)),
+    "NL": (("hollanda",), ("netherlands",)),
+    "US": (("abd", "amerika"), ("usa", "united states")),
+    "IT": (("italya",), ("italy", "italia")),
+    "ES": (("ispanya",), ("spain",)),
+    "PT": (("portekiz",), ("portugal",)),
+    "BE": (("belcika",), ("belgium",)),
+    "CH": (("isvicre",), ("switzerland",)),
+    "AT": (("avusturya",), ("austria",)),
+    "PL": (("polonya",), ("poland",)),
+    "SE": (("isvec",), ("sweden",)),
+    "NO": (("norvec",), ("norway",)),
+    "DK": (("danimarka",), ("denmark",)),
+    "FI": (("finlandiya",), ("finland",)),
+    "IE": (("irlanda",), ("ireland",)),
+    "BG": (("bulgaristan",), ("bulgaria",)),
+    "RO": (("romanya",), ("romania",)),
+    "UA": (("ukrayna",), ("ukraine",)),
+    "CY": (("kibris",), ("cyprus",)),
+    "EG": ((), ("egypt",)),
+    "AE": (("birlesik arap emirlik",), ("united arab emirates", "uae")),
+    "SA": (("suudi arabistan",), ("saudi arabia",)),
+    "QA": ((), ("qatar",)),
+    "IN": (("hindistan",), ("india",)),
+    "PK": (("pakistan",), ("pakistan",)),
+    "JP": (("japonya",), ("japan",)),
+    "KR": (("guney kore",), ("south korea",)),
+    "CA": (("kanada",), ("canada",)),
+    "BR": (("brezilya",), ("brazil",)),
+    "AU": (("avustralya",), ("australia",)),
+    "NG": (("nijerya",), ("nigeria",)),
+    "KZ": (("kazakistan",), ("kazakhstan",)),
+    "UZ": (("ozbekistan",), ("uzbekistan",)),
 }
 
 
@@ -208,9 +303,9 @@ def supports_country(code: str, snippet: str) -> bool:
     text = fold_turkish(match_key(snippet))
     if code.lower() in _WORD_RE.findall(text):
         return True
-    return any(
-        re.search(rf"\b{re.escape(name)}", text) is not None
-        for name in _COUNTRY_NAMES.get(code, ())
+    prefixes, words = _COUNTRY_NAMES.get(code, ((), ()))
+    return any(re.search(rf"\b{re.escape(name)}", text) for name in prefixes) or any(
+        re.search(rf"\b{re.escape(name)}\b", text) for name in words
     )
 
 
@@ -366,12 +461,22 @@ _NUMBER_WORDS = {
 _TEAM_WORDS = ("takim", "kisi", "ekip", "uye", "team", "member", "people", "person")
 
 
+_SOLO_NUMBER_RE = re.compile(r"(?<![\d.,])1 (?:kisi|person|member|participant)")
+
+
 def mentions_team_size(value: int, snippet: str) -> bool:
     """True when the snippet talks about teams ("takım", "kişi", "team", ...) and writes
     `value` as a number or a number word (1-10)."""
-    words = _WORD_RE.findall(fold_turkish(match_key(snippet)))
+    text = fold_turkish(match_key(snippet))
+    words = _WORD_RE.findall(text)
     if not any(word.startswith(_TEAM_WORDS) for word in words):
         return False
+    if value == 1:
+        # A bare "1" is everywhere ("1 dk demo", "1. Ödül"): one person needs a solo word
+        # ("bireysel", "individually") or "1 kişi" / "1 person".
+        return any(_NUMBER_WORDS.get(word) == 1 for word in words) or (
+            _SOLO_NUMBER_RE.search(text) is not None
+        )
     if value in {int(n) for n in _NUMBER_RE.findall(snippet)}:
         return True
     return any(_NUMBER_WORDS.get(word) == value for word in words)
@@ -392,11 +497,14 @@ _PRIZE_WINDOW = 30  # characters around an amount that may name the prize
 
 
 def _parse_number(token: str) -> set[Decimal]:
-    """Readings of "50.000", "50,000", "1,5", "1.234,56": a separator followed by exactly
-    three digits is a thousands separator; otherwise the last separator is the decimal one."""
+    """Readings of "50.000", "50,000", "1,5", "1.234,56", "2,25,000": a separator followed
+    by exactly three digits is a thousands separator (in Indian grouping, two-digit groups
+    before the last three: lakh, crore); otherwise the last separator is the decimal one."""
     groups = re.split(r"[.,]", token)
     readings: set[Decimal] = set()
     if len(groups) > 1 and all(len(group) == 3 for group in groups[1:]):
+        readings.add(Decimal("".join(groups)))
+    if len(groups) > 2 and len(groups[-1]) == 3 and all(len(g) == 2 for g in groups[1:-1]):
         readings.add(Decimal("".join(groups)))
     if len(groups) > 1:
         readings.add(Decimal(f"{''.join(groups[:-1])}.{groups[-1]}"))
