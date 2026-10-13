@@ -148,3 +148,11 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
   - The public notice is accurate about providers, locations and basis, and claims nothing more.
 - **Revisit:** after legal advice, if the community grows, or when the Authority issues guidance or an adequacy decision.
 - **Status:** Accepted (owner risk acceptance)
+
+### D-23 Cloud LLM: OpenAI API (supersedes D-09 default)
+- **Options:** keep local Ollama (D-09) · OpenAI Responses API with data sharing (complimentary daily tokens)
+- **Proposed:** `LLM_PROVIDER=openai` with `OpenAIProvider` (raw REST over httpx2, no SDK, D-10/D-20). Model default `gpt-5.4-mini` (effort `none`) pending the benchmark; Ollama stays as the fallback provider (`LLM_PROVIDER=ollama`, still the code default until the owner switches)
+- **Data sharing:** prompts and outputs may be used for training, and calls are a transfer to the US (D-22). Only public event pages go there; application data never does
+- **Guards:** KVKK mask (`llm/pii.py`: e-mails, phones, valid TC Kimlik numbers) on every outbound string; architecture test keeps `fhc_api.community` from importing `fhc_api.llm`; `store: false`; dedicated project key with a **hard monthly spend limit**; in-process daily token budget (`OPENAI_DAILY_TOKEN_BUDGET`, follow-up: DB-backed counter); errors and logs never carry the key or prompt
+- **Pass 1:** strict structured output with `maxLength`/`minimum` and `temperature: 0` at effort `none` verified live 2026-10-13 (OPENAI_API_RESEARCH §5)
+- **Status:** Proposed (2026-10-13), owner decided to move to OpenAI; default model pending benchmark

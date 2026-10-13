@@ -56,7 +56,8 @@ SNIPPET_MAX_CHARS = 300
 _DETAIL_VALUE_CHARS = 50
 
 # -- output schema ---------------------------------------------------------------------------
-# Sent to Ollama as `format` (OllamaProvider passes `model_json_schema()`), so it stays plain:
+# Sent to Ollama as `format` (OllamaProvider passes `model_json_schema()`) and to OpenAI as a
+# strict json_schema (`llm.openai.to_strict_schema`), so it stays plain:
 # strings, integers, numbers, booleans, one enum, null. Caps follow the event field rules so
 # the grammar keeps the model inside them; patterns, ranges and URL checks are applied per
 # field afterwards, so one bad value does not fail the whole output.

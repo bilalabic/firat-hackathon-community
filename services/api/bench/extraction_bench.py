@@ -2,6 +2,7 @@
 
     uv run python bench/extraction_bench.py run --models qwen3.5:4b-q4_K_M gemma4:e2b-it-qat
     uv run python bench/extraction_bench.py run --models ... --pages devpost-qloo tr-datamedx
+    uv run python bench/extraction_bench.py run --models openai:gpt-5.4-mini openai:gpt-4.1-mini
     uv run python bench/extraction_bench.py rating-sheet bench/data/results/<run>.json
 
 `run` takes each page from bench/data/pages/<id>.html (saved by fetch_pages.py; nothing is
@@ -19,12 +20,17 @@ the real classes land.
 Metrics per model: schema validity (extraction finished without `llm_error`; the provider
 already includes its one repair retry), per-field accuracy, hallucinations (a field filled
 although the gold file says the page does not state it), wall time per page (p50/p95/max),
-GPU memory peak (nvidia-smi sampled every 0.5 s).
+GPU memory peak (nvidia-smi sampled every 0.5 s), tokens per page (OpenAI only).
+
+OpenAI models are named `openai:<model>` (D-23). The key comes from the OPENAI_API_KEY
+environment variable only (never from .env, never printed); the provider masks e-mails, phone
+numbers and TC Kimlik numbers before sending, so evidence for those values is dropped.
 """
 
 import argparse
 import importlib
 import json
+import os
 import random
 import subprocess
 import threading
@@ -48,11 +54,14 @@ from fhc_api.importing.models import (
     PageContent,
 )
 from fhc_api.llm.ollama import OllamaProvider
+from fhc_api.llm.openai import OpenAIProvider, TokenUsage
 
 BENCH_DIR = Path(__file__).resolve().parent
 DATA_DIR = BENCH_DIR / "data"
 OLLAMA_URL = "http://127.0.0.1:11434"
 OLLAMA_TIMEOUT_SECONDS = 300.0
+OPENAI_PREFIX = "openai:"
+OPENAI_TIMEOUT_SECONDS = 120.0
 VRAM_SAMPLE_SECONDS = 0.5
 NVIDIA_SMI = ["nvidia-smi", "--query-gpu=memory.used", "--format=csv,noheader,nounits"]
 
@@ -73,6 +82,8 @@ class Pipeline:
     loader: LoaderLike
     extractor: ExtractorLike
     close: Callable[[], None] = lambda: None
+    # Cumulative token usage of the provider so far; None when the provider reports none.
+    usage: Callable[[], TokenUsage | None] = lambda: None
 
 
 class _TextParser(HTMLParser):
@@ -144,15 +155,36 @@ def _saved_fetcher(pages: dict[str, bytes]) -> SafeFetcher:
     )
 
 
+def _openai_provider(model: str) -> OpenAIProvider:
+    api_key = os.environ.get("OPENAI_API_KEY", "")
+    if not api_key:
+        raise SystemExit("Set OPENAI_API_KEY in the environment to benchmark OpenAI models.")
+    defaults = Settings.model_fields
+    return OpenAIProvider(
+        api_key,
+        model,
+        OPENAI_TIMEOUT_SECONDS,
+        reasoning_effort=os.environ.get(
+            "OPENAI_REASONING_EFFORT", defaults["OPENAI_REASONING_EFFORT"].default
+        ),
+        max_output_tokens=defaults["OPENAI_MAX_OUTPUT_TOKENS"].default,
+        daily_token_budget=defaults["OPENAI_DAILY_TOKEN_BUDGET"].default,
+    )
+
+
 def make_pipeline(model: str, pages: dict[str, bytes], loader_kind: str) -> Pipeline:
     """Create loader + extractor for one model. The only code that knows their constructors."""
-    # Same context window as the API default (Settings.OLLAMA_NUM_CTX).
-    provider = OllamaProvider(
-        OLLAMA_URL,
-        model,
-        OLLAMA_TIMEOUT_SECONDS,
-        num_ctx=Settings.model_fields["OLLAMA_NUM_CTX"].default,
-    )
+    provider: OllamaProvider | OpenAIProvider
+    if model.startswith(OPENAI_PREFIX):
+        provider = _openai_provider(model.removeprefix(OPENAI_PREFIX))
+    else:
+        # Same context window as the API default (Settings.OLLAMA_NUM_CTX).
+        provider = OllamaProvider(
+            OLLAMA_URL,
+            model,
+            OLLAMA_TIMEOUT_SECONDS,
+            num_ctx=Settings.model_fields["OLLAMA_NUM_CTX"].default,
+        )
     if loader_kind == "builtin":
         loader: LoaderLike = BuiltinLoader(pages)
     else:
@@ -160,7 +192,12 @@ def make_pipeline(model: str, pages: dict[str, bytes], loader_kind: str) -> Pipe
         loader = page_module.HtmlPageLoader(_saved_fetcher(pages))
     extraction_module = importlib.import_module("fhc_api.importing.extraction")
     extractor: ExtractorLike = extraction_module.LLMExtractor(provider, model_label=model)
-    return Pipeline(loader, extractor, provider.close)
+    openai = provider if isinstance(provider, OpenAIProvider) else None
+
+    def usage() -> TokenUsage | None:
+        return openai.total_usage if openai is not None else None
+
+    return Pipeline(loader, extractor, provider.close, usage)
 
 
 # --- GPU memory ----------------------------------------------------------------------------
@@ -217,20 +254,33 @@ class PageRun:
     snippets: dict[str, str | None] = field(default_factory=dict)
     flags: list[str] = field(default_factory=list)
     outcomes: dict[str, Outcome] = field(default_factory=dict)
+    input_tokens: int | None = None
+    output_tokens: int | None = None
 
 
 def _json_value(value: object) -> object:
     return value if isinstance(value, bool | int | str) else str(value)
 
 
+def _token_delta(
+    before: TokenUsage | None, after: TokenUsage | None
+) -> tuple[int | None, int | None]:
+    if before is None or after is None:
+        return None, None
+    return after.input_tokens - before.input_tokens, after.output_tokens - before.output_tokens
+
+
 def run_page(pipeline: Pipeline, entry: dict[str, str], gold: dict[str, Any]) -> PageRun:
     started = time.perf_counter()
+    usage_before = pipeline.usage()
     try:
         result = pipeline.extractor.extract(pipeline.loader.load_page(entry["url"]))
     except Exception as exc:
-        return PageRun(
+        failed = PageRun(
             entry["id"], time.perf_counter() - started, False, f"{type(exc).__name__}: {exc}"[:200]
         )
+        failed.input_tokens, failed.output_tokens = _token_delta(usage_before, pipeline.usage())
+        return failed
     seconds = time.perf_counter() - started
     predictions: dict[str, Any] = {n: _json_value(p.value) for n, p in result.fields.items()}
     run = PageRun(
@@ -242,6 +292,7 @@ def run_page(pipeline: Pipeline, entry: dict[str, str], gold: dict[str, Any]) ->
         snippets={name: p.snippet for name, p in result.fields.items()},
         flags=[f"{flag.field}:{flag.kind}" for flag in result.flags],
     )
+    run.input_tokens, run.output_tokens = _token_delta(usage_before, pipeline.usage())
     run.outcomes = dict(score_page(result_values(result), gold["fields"]))
     return run
 
@@ -270,6 +321,7 @@ def run_model(
         pipeline.close()
     seconds = [r.seconds for r in runs]
     scored = [r for r in runs if r.outcomes]
+    counted = [r for r in runs if r.input_tokens is not None and r.output_tokens is not None]
     return {
         "model": model,
         "pages": len(runs),
@@ -280,6 +332,12 @@ def run_model(
         "first_page_seconds": seconds[0] if seconds else None,  # includes model load (cold)
         "vram_baseline_mib": baseline,
         "vram_peak_mib": sampler.peak,
+        "input_tokens_per_page": (
+            sum(r.input_tokens or 0 for r in counted) / len(counted) if counted else None
+        ),
+        "output_tokens_per_page": (
+            sum(r.output_tokens or 0 for r in counted) / len(counted) if counted else None
+        ),
         **summarize([r.outcomes for r in scored]),
         "runs": [r.__dict__ for r in runs],
     }
@@ -296,6 +354,12 @@ def _num(value: float | None, digits: int = 1) -> str:
     return "n/a" if value is None else f"{value:.{digits}f}"
 
 
+def _tokens(tokens_in: float | None, tokens_out: float | None) -> str:
+    if tokens_in is None or tokens_out is None:
+        return "n/a"
+    return f"{tokens_in:.0f} / {tokens_out:.0f}"
+
+
 def render_report(results: dict[str, Any]) -> str:
     models = results["models"]
     lines = [
@@ -304,15 +368,16 @@ def render_report(results: dict[str, Any]) -> str:
         f"Pages: {results['page_count']}; loader: `{results['loader']}`; gold needs owner check.",
         "",
         "| Model | Valid | Acc. | Date acc. | Halluc. | Fab. dates "
-        "| p50 s | p95 s | max s | VRAM MiB |",
-        "|---|---|---|---|---|---|---|---|---|---|",
+        "| p50 s | p95 s | max s | VRAM MiB | Tokens in/out per page |",
+        "|---|---|---|---|---|---|---|---|---|---|---|",
     ]
     for m in models:
         lines.append(
             f"| `{m['model']}` | {_pct(m['schema_validity'])} | {_pct(m['accuracy'])} "
             f"| {_pct(m['date_accuracy'])} | {m['hallucinations']} | {m['fabricated_dates']} "
             f"| {_num(m['seconds_p50'])} | {_num(m['seconds_p95'])} | {_num(m['seconds_max'])} "
-            f"| {m['vram_peak_mib'] if m['vram_peak_mib'] is not None else 'n/a'} |"
+            f"| {m['vram_peak_mib'] if m['vram_peak_mib'] is not None else 'n/a'} "
+            f"| {_tokens(m.get('input_tokens_per_page'), m.get('output_tokens_per_page'))} |"
         )
     lines += [
         "",
