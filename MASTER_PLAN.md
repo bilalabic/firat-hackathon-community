@@ -418,7 +418,7 @@ Findings from the investigation:
 - Next.js classifies `Chrome-Lighthouse` as an HTML-limited bot (`HTML_LIMITED_BOT_UA_RE`): Lighthouse gets the fully rendered response, not the streamed PPR shell. Measured with a normal mobile UA as well: LCP was the same (2.6 s before the font change), so this did not distort the score here. It matters when reading future traces.
 - Remaining headroom, if needed later: about 170 KiB of client JS on the list page (the client-side explorer).
 
-### V1.1a Telegram channel publishing (2026-10-11): done locally, real-channel E2E pending
+### V1.1a Telegram channel publishing (2026-10-11): done, real-channel E2E passed 2026-10-11
 
 **Built by subagents (API, then admin UI).**
 - **API** (`/telegram/channel/...`): preview, send, update, delete and history of one channel post per event.
@@ -449,4 +449,27 @@ Findings from the investigation:
 **Remaining:**
 - (owner) Create the public channel and the channel bot (separate from the admin bot), add the bot as channel administrator, and set TELEGRAM_BOT_TOKEN, TELEGRAM_CHANNEL_ID and WEB_BASE_URL in `services/api/.env`.
 - Apply the migration to the cloud project.
-- **Real-channel E2E (pending):** Settings → Telegram check, then send, edit-on-change, card replacement and delete on a test event; confirm the card is fetched from the production URL and the 48-hour delete limit (TELEGRAM_RESEARCH T-1).
+- **Real-channel E2E (passed 2026-10-11, owner):** channel `@firathackathon` (`-1003982933404`); `/telegram/check` ok after moving the username from a supergroup to the channel and making the bot an admin. From the admin: Send (Grid Up, message 5) and Delete; Send as photo with the production card (Borsa İstanbul, message 7); edit-on-change: the summary changed, the post showed `changed`, Update edited it (`edited`, content version 2). Editing only the description changes nothing, by design (the caption uses the summary). Not yet tried: the admin bot's "Post to channel" offer. The check warns that the bot has more channel rights than V1 needs (least privilege: keep post, edit, delete).
+
+### V1.2 URL import + extraction, OpenAI provider (2026-10-11 to 2026-10-13): done locally, PR pending
+
+**Built by subagents in parallel (A page loading, B extraction, C benchmark, D data/API/admin), then error analysis (E) and the OpenAI provider (F); design [V1_2_URL_IMPORT](docs/planning/V1_2_URL_IMPORT.md).**
+- **Flow:** admin "Import from URL" → `POST /imports/url` → duplicate check on the requested and the final URL (official URL + event sources, advisory locks) → `HtmlPageLoader` (SafeFetcher HTML-only, 20 s per phase, 45 s overall; WHATWG charsets; schema.org Event JSON-LD + meta; visible text with registration links) → `LLMExtractor` (strict structured output, `{value, snippet}` per field, untrusted envelope) → evidence checks (every accepted value needs a located page span; structured data wins; cross-field rules) → draft event + `event_sources` row + `app.event_field_evidence` + `app.runs`. The review page shows each imported field with source, snippet and flags.
+- **Migration** `20261012120000_url_import.sql`: `app.runs`, `app.event_field_evidence` (RLS, `admin_backend` only, not exposed through `api`).
+- **LLM provider (D-23):** `OpenAIProvider` over httpx2 (`POST /v1/responses`, `store: false`, strict JSON schema, repair retry, retries with an overall 120 s deadline, no retry of 500/quota/auth); daily token budget with reservations; KVKK mask for e-mails, phones and TC numbers on every outbound string; an architecture test keeps application code (community, admin bot) from reaching `fhc_api.llm` or `fhc_api.importing`. `LLM_PROVIDER=ollama|openai`; Ollama stays as the fallback.
+- **Benchmark** ([LLM_BENCHMARK](docs/research/LLM_BENCHMARK.md), 20 saved pages, gold pending the owner's check): local `gemma4:e4b` 68% accuracy / 73% dates before the fixes; after the error-analysis fixes, `gpt-5.4-mini` 92% accuracy, 100% date accuracy, 0 fabricated dates, 3.6 s and about 3.9k tokens per page → default model.
+
+**Reviews:** Review 1 (functional: real pages, benchmark, end-to-end imports) and an independent Review 2 per part:
+- A: 3 HIGH crashes on hostile pages (non-text charsets, date overflow, `sNaN` prices), `is_free`/application URL rules, content-type narrowing.
+- B: 2 HIGH (derived fields effectively unchecked; deadline vs end precedence) and 6 MEDIUM evidence-matching issues.
+- D: duplicate check ignoring redirect targets, untested transactional failure path, column limits.
+- F: dates masked as phone numbers, no overall deadline, an architecture test that was too narrow.
+All fixed with regression tests.
+
+**Checks (integration branch `v1.2-url-import`):** API ruff, format, mypy clean; pytest 1205 passed, 3 skipped (opt-in smoke tests); OpenAI smoke test passed; pgTAP 105/105; admin lint, typecheck, 65 tests and build pass; web lint, typecheck, 75 tests pass (web code unchanged).
+**End-to-end (local DB, `LLM_PROVIDER=openai`):** coderspace.io ING Hubs Agentic AI Hackathon imported in 5 s (page 0.9 s, LLM 3.6 s), 10 fields; the Borsa İstanbul URL answered `duplicate`.
+
+**Remaining:**
+- Apply the migration to the cloud project (owner approval), merge the PR, then set `LLM_PROVIDER=openai` and `OPENAI_MODEL=gpt-5.4-mini` in `services/api/.env`.
+- (owner) Check the benchmark gold answers (seven suspected gold errors are listed) and do the blind Turkish summary rating; create a dedicated OpenAI project key with a hard spend limit.
+- Follow-ups: DB-backed token counter; structured-only results for JS-only pages; known limits in the design doc.
