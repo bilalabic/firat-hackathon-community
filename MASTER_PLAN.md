@@ -14,12 +14,12 @@ Discover → Verify → Structure → Review → Publish → Archive
 |---|---|
 | Current repo | [docs/research/EXISTING_REPOSITORY.md](docs/research/EXISTING_REPOSITORY.md) |
 | Architecture | [SYSTEM_ARCHITECTURE](docs/architecture/SYSTEM_ARCHITECTURE.md) · [DATA_MODEL](docs/architecture/DATA_MODEL.md) · [LOCAL_ADMIN](docs/architecture/LOCAL_ADMIN.md) · [PUBLIC_WEB](docs/architecture/PUBLIC_WEB.md) · [AI_ARCHITECTURE](docs/architecture/AI_ARCHITECTURE.md) · [SECURITY](docs/architecture/SECURITY.md) |
-| Research | [STACK](docs/research/STACK_RESEARCH.md) · [LOCAL_LLM](docs/research/LOCAL_LLM_RESEARCH.md) · [CRAWLING](docs/research/CRAWLING_RESEARCH.md) · [TELEGRAM](docs/research/TELEGRAM_RESEARCH.md) |
-| Planning | [MVP](docs/planning/MVP.md) · [ROADMAP](docs/planning/ROADMAP.md) · [DECISIONS](docs/planning/DECISIONS.md) · [RISKS](docs/planning/RISKS.md) · [OPEN_QUESTIONS](docs/planning/OPEN_QUESTIONS.md) |
+| Research | [STACK](docs/research/STACK_RESEARCH.md) · [LOCAL_LLM](docs/research/LOCAL_LLM_RESEARCH.md) · [CRAWLING](docs/research/CRAWLING_RESEARCH.md) · [TELEGRAM](docs/research/TELEGRAM_RESEARCH.md) · [OPENAI_API](docs/research/OPENAI_API_RESEARCH.md) · [DISCOVERY](docs/research/DISCOVERY_RESEARCH.md) |
+| Planning | [MVP](docs/planning/MVP.md) · [ROADMAP](docs/planning/ROADMAP.md) · [DECISIONS](docs/planning/DECISIONS.md) · [RISKS](docs/planning/RISKS.md) · [OPEN_QUESTIONS](docs/planning/OPEN_QUESTIONS.md) · [V1_2_URL_IMPORT](docs/planning/V1_2_URL_IMPORT.md) · [V1_4_DISCOVERY](docs/planning/V1_4_DISCOVERY.md) |
 
 ## Versions
 
-V1 Foundation → V1.1 Telegram publishing → V1.2 URL import + extraction → V1.3 Dedup + history → V1.4 Curated discovery → V1.5 Scheduling → V2 Public/community growth. See [ROADMAP](docs/planning/ROADMAP.md).
+V1 Foundation → V1.1 Telegram publishing → V1.2 URL import + extraction (+ OpenAI provider and benchmark) → V1.3 Dedup + history (+ event types and filters, candidate-aware matcher) → V1.4a Discovery core (adapters + change detection) → V1.4b Watchlists + inbound → V1.4c web_search gap-finder + metrics → V1.5 Scheduling (Windows Task Scheduler) → V2 Public/community growth. The discovery gold list starts now. See [ROADMAP](docs/planning/ROADMAP.md) and [V1_4_DISCOVERY](docs/planning/V1_4_DISCOVERY.md).
 
 ## V1 milestones
 
@@ -48,6 +48,12 @@ Accepted on 2026-09-28:
 - **D-18**: Turkish-first public UI; code, docs and admin in English.
 
 All other decisions (D-01, D-02, D-04–D-10, D-12, D-14–D-17) were accepted on 2026-09-28. Deferred owner inputs are Q3, Q4, Q9 and Q13 (see OPEN_QUESTIONS). None of them blocks M0–M4.
+
+Accepted on 2026-10-13 (owner; full text in [DECISIONS](docs/planning/DECISIONS.md)):
+- **D-23**: LLM provider moves to the OpenAI API; default `gpt-5.4-mini` pending the benchmark; Ollama stays as fallback.
+- **D-24**: discovery architecture: source adapters + change detection first, then series watchlists, admin-bot forwards + community suggestions, OpenAI `web_search` 2×/week as a paid gap-finder (citation URLs only), one-hop link expansion; scope = in-person in Türkiye + online; 10–15 drafts/day cap; Devpost integrated directly (owner-accepted ToS risk, R-21). Text: [DECISIONS](docs/planning/DECISIONS.md).
+- **D-25**: event types (hackathon, ideathon, datathon, game jam, competition) as a field, with public and admin filters and a Telegram caption label.
+- **D-26**: scheduling with Windows Task Scheduler on the local machine (catch-up enabled); no cloud runners.
 
 Owner actions outside the code:
 - Create the Telegram channel and bot before M6 (TELEGRAM_RESEARCH §4).
