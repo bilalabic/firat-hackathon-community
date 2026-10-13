@@ -163,6 +163,16 @@ export const api = {
   updateTeamApplication: (id: string, body: RequestBody<"update_team_application">) =>
     request("update_team_application", "PATCH", `/team-applications/${seg(id)}`, { body }),
 
+  // URL import (V1.2): synchronous fetch + local LLM extraction. Usually 5-30 s, up to
+  // ~90 s on an LLM cold start (OLLAMA_TIMEOUT_S is 120 s). Aborting here does not stop
+  // the API handler: the run then still finishes (see listImportRuns).
+  importEventUrl: (body: RequestBody<"import_event_url">) =>
+    request("import_event_url", "POST", "/imports/url", { body, timeoutMs: 240_000 }),
+  listImportRuns: (query: Query<"list_import_runs">) =>
+    request("list_import_runs", "GET", "/imports/runs", { query }),
+  getEventEvidence: (eventId: string) =>
+    request("get_event_evidence", "GET", `/events/${seg(eventId)}/evidence`),
+
   checkDatabase: () => request("check_database", "GET", "/system/db"),
   // OLLAMA_TIMEOUT_S defaults to 120 s; the first call after a model load is slow.
   checkLlm: () => request("llm_check", "GET", "/llm/check", { timeoutMs: 150_000 }),

@@ -17,7 +17,13 @@ from fhc_api.community.router import router as community_router
 from fhc_api.config import Settings
 from fhc_api.db import create_pool
 from fhc_api.events.router import router as events_router
+from fhc_api.importing.extraction import LLMExtractor
+from fhc_api.importing.models import Extractor, PageLoader
+from fhc_api.importing.page import HtmlPageLoader
+from fhc_api.importing.router import build_import_router
+from fhc_api.importing.service import UrlImporter
 from fhc_api.llm.ollama import OllamaProvider
+from fhc_api.llm.openai import OpenAIProvider
 from fhc_api.llm.provider import LLMConfigError, LLMProvider, MisconfiguredProvider
 from fhc_api.llm.router import build_llm_router
 from fhc_api.overview.router import router as overview_router
@@ -41,17 +47,61 @@ class HealthOut(BaseModel):
     service: str
 
 
-def _build_llm(settings: Settings, closers: list[Callable[[], None]]) -> LLMProvider:
-    try:
-        ollama = OllamaProvider(
-            settings.OLLAMA_BASE_URL, settings.OLLAMA_MODEL, settings.OLLAMA_TIMEOUT_S
+LLM_PROVIDERS = ("ollama", "openai")
+
+
+def _llm_choice(settings: Settings) -> str:
+    return settings.LLM_PROVIDER.strip().lower()
+
+
+def active_llm_model(settings: Settings) -> str:
+    """The model of the configured provider (names the model in `extracted_by`)."""
+    return settings.OPENAI_MODEL if _llm_choice(settings) == "openai" else settings.OLLAMA_MODEL
+
+
+def _model_label(llm: LLMProvider, settings: Settings) -> str:
+    """The model the provider actually uses (also for an injected provider)."""
+    model = getattr(llm, "model", None)
+    if isinstance(model, str) and model.strip():
+        return model.strip()
+    return active_llm_model(settings).strip()
+
+
+def _new_llm(settings: Settings, choice: str) -> OllamaProvider | OpenAIProvider:
+    if choice == "openai":
+        if settings.OPENAI_API_KEY is None:
+            raise LLMConfigError("OPENAI_API_KEY is not set.")
+        return OpenAIProvider(
+            settings.OPENAI_API_KEY.get_secret_value(),
+            settings.OPENAI_MODEL,
+            settings.OPENAI_TIMEOUT_S,
+            base_url=settings.OPENAI_BASE_URL,
+            total_timeout_s=settings.OPENAI_TOTAL_TIMEOUT_S,
+            reasoning_effort=settings.OPENAI_REASONING_EFFORT.strip().lower(),
+            max_output_tokens=settings.OPENAI_MAX_OUTPUT_TOKENS,
+            daily_token_budget=settings.OPENAI_DAILY_TOKEN_BUDGET,
         )
+    if choice == "ollama":
+        return OllamaProvider(
+            settings.OLLAMA_BASE_URL,
+            settings.OLLAMA_MODEL,
+            settings.OLLAMA_TIMEOUT_S,
+            num_ctx=settings.OLLAMA_NUM_CTX,
+        )
+    raise LLMConfigError(f"LLM_PROVIDER must be one of: {', '.join(LLM_PROVIDERS)}.")
+
+
+def _build_llm(settings: Settings, closers: list[Callable[[], None]]) -> LLMProvider:
+    choice = _llm_choice(settings)
+    try:
+        provider = _new_llm(settings, choice)
     except LLMConfigError as exc:
         # The API stays up; /llm/check reports the (secret-free) configuration message.
         logger.warning("LLM provider disabled: %s", exc)
-        return MisconfiguredProvider("ollama", settings.OLLAMA_MODEL, exc)
-    closers.append(ollama.close)
-    return ollama
+        name = choice if choice in LLM_PROVIDERS else "unknown"
+        return MisconfiguredProvider(name, active_llm_model(settings), exc)
+    closers.append(provider.close)
+    return provider
 
 
 def create_app(
@@ -62,6 +112,9 @@ def create_app(
     llm_provider: LLMProvider | None = None,
     telegram_client: TelegramClient | None = None,
     admin_bot_client: TelegramClient | None = None,
+    page_loader: PageLoader | None = None,
+    extractor: Extractor | None = None,
+    url_import: bool = False,
 ) -> FastAPI:
     pool = create_pool(settings.DATABASE_URL.get_secret_value())
     # Integration clients are created once per app and closed on shutdown (`closers`).
@@ -88,6 +141,14 @@ def create_app(
         settings, pool.connection, web_revalidator, client=admin_bot_client, channel=publisher
     )
     closers.append(admin_bot.close)
+    # URL import (V1.2). `url_import=True` (the real app) builds the HTML page loader and the
+    # LLM extractor; tests inject fakes or leave both unset. Without a page loader and an
+    # extractor the import endpoint answers 409 `URL import is not available`; the
+    # evidence and run reads still work.
+    if url_import:
+        page_loader = page_loader or HtmlPageLoader()
+        extractor = extractor or LLMExtractor(llm, model_label=_model_label(llm, settings))
+    importer = UrlImporter(page_loader, extractor)
 
     @asynccontextmanager
     async def lifespan(_: FastAPI) -> AsyncIterator[None]:
@@ -121,6 +182,8 @@ def create_app(
     app.state.revalidator = web_revalidator
     app.state.admin_bot = admin_bot
     app.state.publisher = publisher
+    app.state.importer = importer
+    app.state.llm = llm
     app.state.url_checker = url_checker or check_url_reachable
 
     # Rejects DNS-rebinding requests (foreign Host header) with 400. No CORS middleware:
@@ -149,6 +212,7 @@ def create_app(
         ),
         build_channel_router(lambda: publisher),
         build_admin_bot_router(lambda: admin_bot),
+        build_import_router(lambda: importer),
     ):
         protected.include_router(router)
 
@@ -162,4 +226,4 @@ def create_app(
 
 def create_app_from_env() -> FastAPI:
     # Required values come from the environment or services/api/.env, not from kwargs.
-    return create_app(Settings())  # type: ignore[call-arg]
+    return create_app(Settings(), url_import=True)  # type: ignore[call-arg]

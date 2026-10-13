@@ -10,18 +10,21 @@ Rules, applied to the first URL and to every redirect hop:
   the `Host` header and as the TLS SNI/certificate name. A second DNS lookup by the
   HTTP stack, which a rebinding attacker could answer differently, never happens;
 - redirects are followed manually, at most 5;
-- 10 s connect/read/write/pool timeouts; when a body is read, a 5 MB cap on the decoded
-  body (counted while streaming) and a content-type allow-list (HTML, JSON, XML, images).
-  A headers-only fetch (reachability) reads no body and needs no allow-list.
+- connect/read/write/pool timeouts (10 s by default, per phase) and a 45 s wall-clock
+  deadline across all hops and the body read; when a body is read, a 5 MB cap on the
+  decoded body (counted while streaming) and a content-type allow-list (HTML, JSON, XML,
+  images). A headers-only fetch (reachability) reads no body and needs no allow-list.
 
-Not covered: DNS resolution itself has no timeout (OS resolver), and there is no
-overall wall-clock limit across hops (at most 6 hops x the per-phase timeouts).
+Not covered: DNS resolution itself has no timeout (OS resolver), and the deadline is
+checked between hops and between body chunks, so one phase may overrun it by up to its
+per-phase timeout.
 
 Environment proxies are ignored (`trust_env=False`) so they cannot bypass the checks.
 """
 
 import ipaddress
 import socket
+import time
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 
@@ -30,6 +33,7 @@ import httpx2
 MAX_REDIRECTS = 5
 MAX_BODY_BYTES = 5 * 1024 * 1024
 TIMEOUT_SECONDS = 10.0
+DEADLINE_SECONDS = 45.0
 DEFAULT_PORTS = {"http": 80, "https": 443}
 USER_AGENT = (
     "FiratHackathonCommunityBot/0.1 "
@@ -78,6 +82,7 @@ _BLOCKED_NETWORKS = tuple(
 _NAT64 = ipaddress.ip_network("64:ff9b::/96")
 
 type Resolver = Callable[[str, int], Sequence[str]]
+type Clock = Callable[[], float]
 
 
 class FetchError(Exception):
@@ -88,6 +93,10 @@ class BlockedUrlError(FetchError):
     """The URL or one of its resolved addresses is not allowed."""
 
 
+class ContentTypeError(FetchError):
+    """The response content type is not in the allow-list."""
+
+
 @dataclass(frozen=True)
 class FetchResult:
     url: str  # final URL after redirects
@@ -95,6 +104,7 @@ class FetchResult:
     content_type: str
     body: bytes
     redirects: int
+    charset: str | None = None  # from the Content-Type header, if declared
 
 
 def system_resolver(host: str, port: int) -> list[str]:
@@ -169,26 +179,43 @@ class SafeFetcher:
         resolver: Resolver = system_resolver,
         transport: httpx2.BaseTransport | None = None,
         max_body_bytes: int = MAX_BODY_BYTES,
+        timeout: float = TIMEOUT_SECONDS,
+        deadline: float = DEADLINE_SECONDS,
+        clock: Clock = time.monotonic,
     ) -> None:
         self._resolver = resolver
         self._transport = transport  # tests pass httpx2.MockTransport
         self._max_body_bytes = max_body_bytes
+        self._timeout = timeout  # per phase (connect, read, write, pool)
+        self._deadline = deadline  # wall clock, whole fetch
+        self._clock = clock
 
-    def fetch(self, url: str, *, read_body: bool = True) -> FetchResult:
+    def fetch(
+        self,
+        url: str,
+        *,
+        read_body: bool = True,
+        content_types: frozenset[str] | None = None,
+    ) -> FetchResult:
         """GET `url` following at most MAX_REDIRECTS checked redirects.
 
         With `read_body=False` only the status line and headers are read (reachability).
+        `content_types` narrows the allow-list for the body (e.g. HTML only for imports).
         """
         current = check_url(url)
+        deadline = self._clock() + self._deadline
         with httpx2.Client(
             transport=self._transport,
-            timeout=httpx2.Timeout(TIMEOUT_SECONDS),
+            timeout=httpx2.Timeout(self._timeout),
             follow_redirects=False,
             trust_env=False,
             headers={"User-Agent": USER_AGENT},
         ) as client:
             for redirects in range(MAX_REDIRECTS + 1):
-                request = self._pinned_request(client, current)
+                remaining = deadline - self._clock()
+                if remaining <= 0:
+                    raise FetchError("request timed out")
+                request = self._pinned_request(client, current, min(self._timeout, remaining))
                 try:
                     response = client.send(request, stream=True)
                 except httpx2.TimeoutException as exc:
@@ -203,12 +230,21 @@ class SafeFetcher:
                         # RemoteProtocolError in `send` above.
                         current = check_url(current.join(location))
                         continue
-                    return self._result(response, current, redirects, read_body=read_body)
+                    return self._result(
+                        response,
+                        current,
+                        redirects,
+                        read_body=read_body,
+                        content_types=content_types,
+                        deadline=deadline,
+                    )
                 finally:
                     response.close()
         raise FetchError(f"more than {MAX_REDIRECTS} redirects")
 
-    def _pinned_request(self, client: httpx2.Client, url: httpx2.URL) -> httpx2.Request:
+    def _pinned_request(
+        self, client: httpx2.Client, url: httpx2.URL, timeout: float
+    ) -> httpx2.Request:
         address = _resolve_public(url, self._resolver)
         host = url.raw_host.decode("ascii")  # IDNA-encoded
         extensions = {"sni_hostname": host} if url.scheme == "https" else {}
@@ -216,27 +252,40 @@ class SafeFetcher:
             "GET",
             url.copy_with(host=address),
             headers={"Host": url.netloc.decode("ascii")},
+            timeout=httpx2.Timeout(timeout),
             extensions=extensions,
         )
 
     def _result(
-        self, response: httpx2.Response, url: httpx2.URL, redirects: int, *, read_body: bool
+        self,
+        response: httpx2.Response,
+        url: httpx2.URL,
+        redirects: int,
+        *,
+        read_body: bool,
+        content_types: frozenset[str] | None,
+        deadline: float,
     ) -> FetchResult:
         content_type = _content_type(response)
         body = b""
         if read_body:  # the allow-list guards what we ingest; headers alone are harmless
-            if not _allowed_content_type(content_type):
-                raise FetchError(f"content type {content_type or '(none)'!r} is not allowed")
-            body = self._read_capped(response)
+            # `content_types` only narrows the global allow-list, never widens it.
+            allowed = _allowed_content_type(content_type) and (
+                content_types is None or content_type in content_types
+            )
+            if not allowed:
+                raise ContentTypeError(f"content type {content_type or '(none)'!r} is not allowed")
+            body = self._read_capped(response, deadline)
         return FetchResult(
             url=str(url),
             status_code=response.status_code,
             content_type=content_type,
             body=body,
             redirects=redirects,
+            charset=response.charset_encoding,
         )
 
-    def _read_capped(self, response: httpx2.Response) -> bytes:
+    def _read_capped(self, response: httpx2.Response, deadline: float) -> bytes:
         declared = response.headers.get("content-length", "")
         if declared.isdigit() and int(declared) > self._max_body_bytes:
             raise FetchError("response body too large")
@@ -247,6 +296,8 @@ class SafeFetcher:
                 size += len(chunk)
                 if size > self._max_body_bytes:
                     raise FetchError("response body too large")
+                if self._clock() > deadline:  # a slow drip of small chunks
+                    raise FetchError("request timed out")
                 chunks.append(chunk)
         except httpx2.TimeoutException as exc:
             raise FetchError("request timed out") from exc

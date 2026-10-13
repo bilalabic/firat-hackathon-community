@@ -37,6 +37,25 @@ class Settings(BaseSettings):
     OLLAMA_MODEL: str = "qwen3.5:0.8b"
     # The first call after a model load can take ~50 s on the dev laptop.
     OLLAMA_TIMEOUT_S: float = Field(default=120.0, gt=0)
+    # Context window per call (`options.num_ctx`). Ollama defaults to 4096 tokens and silently
+    # truncates longer prompts; URL import sends up to 24 000 characters of page text.
+    OLLAMA_NUM_CTX: int = Field(default=16384, ge=2048, le=262144)
+
+    # Active LLM provider: "ollama" (default) or "openai" (D-23). Kept as a raw string so an
+    # unknown value only disables the LLM (reported by GET /llm/check), never the API.
+    LLM_PROVIDER: str = "ollama"
+    # Cloud LLM (D-23). The model default is pending the benchmark.
+    OPENAI_API_KEY: SecretStr | None = None
+    OPENAI_MODEL: str = "gpt-5.4-mini"
+    OPENAI_BASE_URL: str = "https://api.openai.com"
+    OPENAI_TIMEOUT_S: float = Field(default=90.0, gt=0)
+    # Wall-clock cap per generate call, including retries and the repair retry.
+    OPENAI_TOTAL_TIMEOUT_S: float = Field(default=120.0, gt=0)
+    # Sent only to reasoning models (gpt-5.x, o-series): none|minimal|low|medium|high|xhigh.
+    OPENAI_REASONING_EFFORT: str = "none"
+    OPENAI_MAX_OUTPUT_TOKENS: int = Field(default=4000, gt=0)
+    # In-process guard, reset at 00:00 UTC; below the 2.5M/day complimentary pool.
+    OPENAI_DAILY_TOKEN_BUDGET: int = Field(default=2_000_000, gt=0)
 
     # Telegram (D-12). The check reports `not_configured` while either is unset.
     TELEGRAM_BOT_TOKEN: SecretStr | None = None

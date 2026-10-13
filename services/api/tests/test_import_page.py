@@ -1,0 +1,907 @@
+"""URL import, part A: page loading (JSON-LD, meta tags, main text, errors). No real
+network: DNS is a dict and HTTP is httpx2.MockTransport. The fixtures in
+fixtures/import/ are hand-written minimal pages."""
+
+import json
+from collections.abc import Callable
+from datetime import UTC, date, datetime
+from pathlib import Path
+from typing import Any
+
+import httpx2
+import pytest
+import trafilatura
+
+from fhc_api.common.http import SafeFetcher
+from fhc_api.importing import page as page_module
+from fhc_api.importing.models import MAX_TEXT_CHARS, PageContent, PageError, StructuredValue
+from fhc_api.importing.page import (
+    FETCH_TIMEOUT_SECONDS,
+    MIN_TEXT_CHARS,
+    SNIPPET_MAX_CHARS,
+    HtmlPageLoader,
+    decode_html,
+    parse_page,
+)
+
+FIXTURES = Path(__file__).parent / "fixtures" / "import"
+PUBLIC_IP = "93.184.215.14"
+NOW = datetime(2026, 10, 11, 12, 0, tzinfo=UTC)
+PAGE_URL = "https://example.org/hack"
+FILLER = (
+    "<p>This paragraph is filler text so that the page has enough readable content for the "
+    "loader. It describes a hackathon where teams build software over a weekend, meet "
+    "mentors, present a demo to the jury and receive feedback on their projects.</p>"
+)
+Handler = Callable[[httpx2.Request], httpx2.Response]
+
+
+def fixture(name: str) -> str:
+    return (FIXTURES / name).read_text(encoding="utf-8")
+
+
+def parse(markup: str, url: str = PAGE_URL, final_url: str | None = None) -> PageContent:
+    return parse_page(markup, requested_url=url, final_url=final_url or url, fetched_at=NOW)
+
+
+def jsonld_page(*blocks: Any, head: str = "") -> str:
+    scripts = "".join(
+        f'<script type="application/ld+json">{json.dumps(block)}</script>' for block in blocks
+    )
+    return f"<html><head>{head}{scripts}</head><body><main>{FILLER}</main></body></html>"
+
+
+def event(**properties: Any) -> dict[str, Any]:
+    return {"@context": "https://schema.org", "@type": "Event", "name": "Test Hack", **properties}
+
+
+def values(page: PageContent) -> dict[str, object]:
+    return {field: proposal.value for field, proposal in page.structured.items()}
+
+
+def loader(
+    handler: Handler, dns: dict[str, list[str]] | None = None, **kwargs: Any
+) -> HtmlPageLoader:
+    table = dns if dns is not None else {"example.org": [PUBLIC_IP]}
+
+    def resolve(host: str, port: int) -> list[str]:
+        if host not in table:
+            raise OSError("name not known")
+        return table[host]
+
+    fetcher = SafeFetcher(resolver=resolve, transport=httpx2.MockTransport(handler), **kwargs)
+    return HtmlPageLoader(fetcher, now=lambda: NOW)
+
+
+def respond(
+    body: bytes, content_type: str = "text/html; charset=utf-8", status: int = 200
+) -> Handler:
+    return lambda _: httpx2.Response(status, headers={"content-type": content_type}, content=body)
+
+
+# --- fixtures ----------------------------------------------------------------------
+
+
+def test_event_jsonld_fixture() -> None:
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    page = loader(respond(body)).load_page(PAGE_URL)
+
+    assert values(page) == {
+        "title": "Example Hack 2026",
+        "organizer": "Example Student Club",
+        "summary": "A 48-hour student hackathon on climate data.",
+        "start_date": date(2026, 11, 14),
+        "end_date": date(2026, 11, 16),  # 21:30Z is 00:30 the next day in Istanbul
+        "format": "in_person",
+        "venue": "Example University Library",
+        "city": "Elazığ",
+        "country": "TR",
+        "is_free": True,
+        "application_url": "https://example.org/hack/apply",
+    }
+    assert {proposal.source for proposal in page.structured.values()} == {"jsonld"}
+    assert page.structured["end_date"].snippet == "2026-11-15T21:30:00Z"
+    assert page.structured["title"].snippet == "Example Hack 2026"
+    assert page.title == "Example Hack 2026"  # og:title wins over <title>
+    assert page.image_url == "https://cdn.example.org/hack/banner.png"
+    assert page.requested_url == page.final_url == PAGE_URL
+    assert page.fetched_at == NOW
+    assert "48-hour student hackathon on open climate data" in page.text
+    assert "30,000 TRY" in page.text  # tables are kept
+    assert "opening and team forming" in page.text  # lists are kept
+    assert "Copyright Example Events" not in page.text  # boilerplate is dropped
+    assert not page.text_truncated
+
+
+def test_graph_with_invalid_block_and_turkish_text() -> None:
+    url = "https://ornek.edu.tr/hackathon"
+
+    page = parse(fixture("graph_turkish.html"), url)
+
+    assert values(page) == {
+        "title": "Doğu Anadolu Yapay Zekâ Hackathonu",
+        "organizer": "Örnek Üniversitesi Yapay Zekâ Kulübü",
+        # The JSON-LD description is longer than 300 characters: og:description is used.
+        "summary": "Üniversite öğrencileri için iki günlük yapay zekâ hackathonu: ekibini kur, "
+        "çözümünü geliştir.",
+        "start_date": date(2026, 12, 5),
+        "end_date": date(2026, 12, 6),
+        "format": "hybrid",
+        "venue": "Mühendislik Fakültesi",
+        "city": "Elazığ",
+        "country": "TR",  # from the country name "Türkiye"
+        # no application_url: the event's `url` is the page itself
+    }
+    assert page.structured["summary"].source == "meta"
+    assert page.title == "Doğu Anadolu Yapay Zekâ Hackathonu"
+    assert "Başvurular 20 Kasım'a kadar açıktır" in page.text
+
+
+def test_meta_only_page() -> None:
+    page = parse(fixture("meta_only.html"), "https://example.org/jam/")
+
+    assert page.title == "Spring Builders Jam"  # empty og:title ignored, whitespace collapsed
+    assert page.image_url == "https://example.org/img/jam.png"  # made absolute
+    assert page.structured == {
+        "summary": StructuredValue(
+            value="A weekend build jam for first-time hackers.",
+            source="meta",
+            snippet="A weekend build jam for first-time hackers.",
+        )
+    }
+    assert "mentors run short workshops" in page.text
+
+
+def test_js_only_page_has_no_readable_content() -> None:
+    with pytest.raises(PageError, match=r"no readable content.*JavaScript"):
+        parse(fixture("js_only.html"))
+
+
+# --- JSON-LD shapes -----------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    "document",
+    [
+        [{"@type": "WebSite", "name": "Site"}, event()],  # top-level array
+        {"@context": "https://schema.org", "@graph": [{"@type": "WebPage"}, event()]},
+        {"@type": "WebPage", "mainEntity": event()},  # nested
+        {"@type": "ItemList", "itemListElement": [{"@type": "ListItem", "item": event()}]},
+        event(**{"@type": "https://schema.org/SocialEvent"}),  # IRI
+        event(**{"@type": "schema:EducationEvent"}),  # prefixed
+        event(**{"@type": ["Thing", "Hackathon"]}),  # list
+        event(**{"@type": "BusinessEvent"}),
+    ],
+)
+def test_event_is_found_in_any_shape(document: Any) -> None:
+    assert values(parse(jsonld_page(document)))["title"] == "Test Hack"
+
+
+@pytest.mark.parametrize(
+    "block",
+    [
+        "{not json",
+        '{"@type": "Event", "name": "Trailing comma",}',
+        "",
+        "[" * 5000 + "]" * 5000,  # too deep for the json module
+    ],
+    ids=["broken", "trailing-comma", "empty", "too-deep"],
+)
+def test_invalid_jsonld_is_ignored(block: str) -> None:
+    markup = (
+        f'<html><head><script type="application/ld+json">{block}</script>'
+        f'<script type="application/ld+json">{json.dumps(event())}</script>'
+        f"</head><body>{FILLER}</body></html>"
+    )
+
+    assert values(parse(markup)) == {"title": "Test Hack"}
+
+
+def test_non_event_types_give_no_structured_values() -> None:
+    page = parse(jsonld_page({"@type": "Organization", "name": "Not An Event"}))
+
+    assert page.structured == {}
+
+
+def test_event_with_the_page_url_is_preferred() -> None:
+    other = event(name="Related Hack", url="https://example.org/other")
+    this = event(name="This Hack", url=PAGE_URL + "/")  # normalized comparison
+
+    assert values(parse(jsonld_page([other, this])))["title"] == "This Hack"
+
+
+def test_raw_newlines_in_jsonld_strings_are_accepted() -> None:
+    markup = (
+        '<html><head><script type="application/ld+json">'
+        '{"@type": "Event", "name": "Line\nBreak Hack"}'
+        f"</script></head><body>{FILLER}</body></html>"
+    )
+
+    assert values(parse(markup))["title"] == "Line Break Hack"
+
+
+def test_sub_events_do_not_replace_the_event() -> None:
+    document = {
+        "@type": "WebPage",
+        "about": event(subEvent=[{"@type": "Event", "name": "Opening Talk"}]),
+    }
+
+    assert values(parse(jsonld_page(document)))["title"] == "Test Hack"
+
+
+# --- dates --------------------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("raw", "expected"),
+    [
+        ("2026-11-14", date(2026, 11, 14)),
+        ("2026-11-14T09:00", date(2026, 11, 14)),  # no offset: the date as written
+        ("2026-11-14T23:30:00Z", date(2026, 11, 15)),  # 02:30 in Istanbul
+        ("2026-11-14T23:30:00.000+00:00", date(2026, 11, 15)),
+        # A local offset is the event's own time zone: the date as written, not the
+        # Istanbul date (Devpost lists a US event's 18:30 -04:00 start on that day).
+        ("2026-11-14T01:00:00-05:00", date(2026, 11, 14)),
+        ("2026-10-10T18:30:00.000-04:00", date(2026, 10, 10)),  # 01:30 next day in Istanbul
+        ("2026-11-14T00:30:00+03:00", date(2026, 11, 14)),
+        ("2026-11-14T23:30:00+09:00", date(2026, 11, 14)),
+        ("14.11.2026", None),
+        ("2026-13-01", None),
+        ("next Saturday", None),
+        # Shifting UTC to Istanbul would leave the datetime range: OverflowError, ignored.
+        ("9999-12-31T23:00:00Z", None),
+    ],
+)
+def test_start_date(raw: str, expected: date | None) -> None:
+    assert values(parse(jsonld_page(event(startDate=raw)))).get("start_date") == expected
+
+
+def test_non_string_dates_are_ignored() -> None:
+    assert "start_date" not in values(parse(jsonld_page(event(startDate=20261114))))
+
+
+# --- format and location -----------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("properties", "expected"),
+    [
+        ({"eventAttendanceMode": "https://schema.org/OnlineEventAttendanceMode"}, "online"),
+        ({"eventAttendanceMode": "OfflineEventAttendanceMode"}, "in_person"),
+        ({"eventAttendanceMode": "schema:MixedEventAttendanceMode"}, "hybrid"),
+        ({"location": {"@type": "VirtualLocation", "url": "https://meet.example.com"}}, "online"),
+        ({"location": "Online"}, "online"),
+        ({"location": "Çevrimiçi"}, "online"),
+        (
+            {"location": [{"@type": "VirtualLocation"}, {"@type": "Place", "name": "Hall A"}]},
+            "hybrid",
+        ),
+        # The declared attendance mode wins over what the locations suggest.
+        (
+            {
+                "eventAttendanceMode": "OfflineEventAttendanceMode",
+                "location": {"@type": "VirtualLocation"},
+            },
+            "in_person",
+        ),
+        ({"location": {"@type": "Place", "name": "Hall A"}}, None),  # a place alone: unknown
+        ({"eventAttendanceMode": "SomethingElse"}, None),
+    ],
+)
+def test_format(properties: dict[str, Any], expected: str | None) -> None:
+    assert values(parse(jsonld_page(event(**properties)))).get("format") == expected
+
+
+@pytest.mark.parametrize(
+    ("location", "expected"),
+    [
+        (
+            {
+                "@type": "Place",
+                "name": "Hall A",
+                "address": {"addressLocality": "İstanbul", "addressCountry": "tr"},
+            },
+            {"venue": "Hall A", "city": "İstanbul", "country": "TR"},
+        ),
+        (
+            {"@type": "PostalAddress", "addressLocality": "Berlin", "addressCountry": "Germany"},
+            {"city": "Berlin"},  # country name without a known code: left out
+        ),
+        (
+            {"@type": "Place", "name": "Hall A", "address": "1 Main St, Ankara"},
+            {"venue": "Hall A"},  # free-text address: not split
+        ),
+        ({"@type": "Place", "address": {"addressCountry": {"name": "Turkey"}}}, {"country": "TR"}),
+        ({"@type": "Place", "address": {"addressCountry": "TUR"}}, {}),  # alpha-3: not mapped
+        ("Mühendislik Fakültesi, Elazığ", {"venue": "Mühendislik Fakültesi, Elazığ"}),
+    ],
+)
+def test_location(location: Any, expected: dict[str, str]) -> None:
+    found = values(parse(jsonld_page(event(location=location))))
+
+    assert {key: found[key] for key in ("venue", "city", "country") if key in found} == expected
+
+
+def test_venue_equal_to_the_event_name_is_dropped() -> None:
+    location = {"@type": "Place", "name": "TEST hack", "address": {"addressLocality": "Ankara"}}
+
+    found = values(parse(jsonld_page(event(location=location))))
+
+    assert "venue" not in found
+    assert found["city"] == "Ankara"
+
+
+# --- offers, URLs, free ------------------------------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("properties", "expected"),
+    [
+        ({"offers": {"price": 0}}, True),
+        ({"offers": {"price": "0.00", "priceCurrency": "TRY"}}, True),
+        ({"offers": [{"price": "0"}, {"price": 0.0}, {"name": "no price"}]}, True),
+        # Mixed free and paid offers ("0" for students, "500" for others): not free.
+        ({"offers": [{"price": 500}, {"price": "0"}]}, None),
+        ({"offers": [{"price": "0"}, {"price": "500"}]}, None),
+        ({"offers": {"price": 250}}, None),
+        ({"offers": {"price": "Free"}}, None),
+        ({"offers": {"price": True}}, None),
+        ({"offers": {"name": "Ticket"}}, None),
+        ({"isAccessibleForFree": True}, True),
+        ({"isAccessibleForFree": "True"}, True),
+        ({"isAccessibleForFree": True, "offers": [{"price": 500}]}, True),
+        # Non-finite and negative prices are no price (sNaN used to raise on comparison).
+        ({"offers": {"price": "sNaN"}}, None),
+        ({"offers": {"price": "NaN"}}, None),
+        ({"offers": {"price": "-Infinity"}}, None),
+        ({"offers": {"price": "Infinity"}}, None),
+        ({"offers": {"price": "-5"}}, None),
+        ({"offers": [{"price": "sNaN"}, {"price": "0"}]}, True),
+    ],
+)
+def test_is_free(properties: dict[str, Any], expected: bool | None) -> None:
+    assert values(parse(jsonld_page(event(**properties)))).get("is_free") == expected
+
+
+@pytest.mark.parametrize(
+    ("properties", "expected"),
+    [
+        ({"offers": {"url": "https://apply.example.com/form"}}, "https://apply.example.com/form"),
+        ({"offers": {"url": "/hack/register"}}, "https://example.org/hack/register"),
+        ({"url": "https://register.example.net/x"}, None),  # the event's own URL: not used
+        ({"offers": {"url": PAGE_URL}}, None),  # the page itself
+        ({"offers": {"url": "https://www.example.org/hack/?utm_source=x"}}, None),  # same
+        ({"offers": {"url": "javascript:alert(1)"}}, None),
+        ({"offers": {"url": "ftp://example.org/file"}}, None),
+        ({"offers": {"url": "https://user:pw@example.org/"}}, None),
+        (
+            {"potentialAction": {"@type": "RegisterAction", "target": "https://reg.example.com/"}},
+            "https://reg.example.com/",
+        ),
+        (
+            {
+                "potentialAction": [
+                    {"@type": "ViewAction", "target": "https://view.example.com/"},
+                    {
+                        "@type": "RegisterAction",
+                        "target": {"@type": "EntryPoint", "urlTemplate": "/hack/form"},
+                    },
+                ]
+            },
+            "https://example.org/hack/form",
+        ),
+        (
+            {
+                "offers": {"url": "mailto:team@example.org"},
+                "potentialAction": {"@type": "RegisterAction", "target": "https://r.example/"},
+            },
+            "https://r.example/",  # an unusable offer URL falls back to the RegisterAction
+        ),
+    ],
+)
+def test_application_url(properties: dict[str, Any], expected: str | None) -> None:
+    assert values(parse(jsonld_page(event(**properties)))).get("application_url") == expected
+
+
+def test_application_url_equal_to_the_final_url_is_dropped() -> None:
+    page = parse(
+        jsonld_page(event(offers={"url": "https://example.org/hack-2026"})),
+        url="https://example.org/h",
+        final_url="https://example.org/hack-2026",
+    )
+
+    assert "application_url" not in page.structured
+
+
+# --- text values and the event field rules -----------------------------------------
+
+
+@pytest.mark.parametrize(
+    ("organizer", "url", "kept"),
+    [
+        # The hosting platform of a subdomain page (Devpost) is not the organizer.
+        ({"@type": "Organization", "name": "Devpost, Inc.", "url": "https://devpost.com/"},
+         "https://myhack.devpost.com/", False),
+        ([{"name": "Host Inc.", "url": "https://host.example"}], "https://a.host.example/", False),
+        # The site's own organizer, on its own site, stays.
+        ({"name": "GİRVAK", "url": "https://example.org"}, "https://www.example.org/hack", True),
+        ({"name": "Club A", "url": "https://club.example/a"}, "https://h.club.example/", True),
+        ({"name": "Club A"}, "https://hack.club.example/", True),
+    ],
+)  # fmt: skip
+def test_hosting_platform_is_no_organizer(organizer: Any, url: str, kept: bool) -> None:
+    found = values(parse(jsonld_page(event(organizer=organizer)), url=url))
+
+    assert ("organizer" in found) is kept
+
+
+def test_venue_equal_to_the_city_is_dropped() -> None:
+    location = {"@type": "Place", "name": "İstanbul", "address": {"addressLocality": "istanbul"}}
+
+    found = values(parse(jsonld_page(event(location=location))))
+
+    assert "venue" not in found
+    assert found["city"] == "istanbul"
+
+
+def test_values_failing_the_event_rules_are_dropped() -> None:
+    page = parse(jsonld_page(event(name="ab", organizer={"name": "x" * 161})))
+
+    assert page.structured == {}
+
+
+def test_html_entities_and_whitespace_are_cleaned() -> None:
+    page = parse(jsonld_page(event(name="  R&amp;D\n  Hack ", organizer=" Club  A ")))
+
+    assert values(page) == {"title": "R&D Hack", "organizer": "Club A"}
+    assert page.structured["title"].snippet == "R&amp;D\n  Hack"
+
+
+def test_organizer_shapes() -> None:
+    organizers = [{"@type": "Person"}, {"@type": "Person", "name": "Ayşe Yılmaz"}]
+
+    assert values(parse(jsonld_page(event(organizer=organizers))))["organizer"] == "Ayşe Yılmaz"
+
+
+def test_summary_rules() -> None:
+    short = parse(jsonld_page(event(description="<p>Build <b>tools</b> for   farmers.</p>")))
+    long = parse(jsonld_page(event(description="word " * 70)))  # 349 chars collapsed
+
+    assert values(short)["summary"] == "Build tools for farmers."
+    assert "summary" not in long.structured
+
+
+def test_jsonld_summary_wins_over_meta() -> None:
+    head = '<meta property="og:description" content="From meta.">'
+    page = parse(jsonld_page(event(description="From JSON-LD."), head=head))
+
+    assert page.structured["summary"] == StructuredValue(
+        value="From JSON-LD.", source="jsonld", snippet="From JSON-LD."
+    )
+
+
+def test_meta_description_is_the_last_summary_fallback() -> None:
+    head = '<meta name="description" content="Plain meta description.">'
+
+    assert values(parse(jsonld_page(head=head))) == {"summary": "Plain meta description."}
+
+
+def test_long_meta_description_is_not_a_summary() -> None:
+    head = f'<meta property="og:description" content="{"word " * 70}">'
+
+    assert parse(jsonld_page(head=head)).structured == {}
+
+
+def test_snippets_are_capped() -> None:
+    organizer = {"@type": "Organization", "name": "Club", "description": "x" * 500}
+
+    snippet = parse(jsonld_page(event(organizer=organizer))).structured["organizer"].snippet
+
+    assert len(snippet) == SNIPPET_MAX_CHARS
+    assert snippet.startswith('{"@type": "Organization", "name": "Club"')
+
+
+def test_maximum_attendee_capacity_is_ignored() -> None:
+    page = parse(jsonld_page(event(maximumAttendeeCapacity=50)))
+
+    assert values(page) == {"title": "Test Hack"}
+
+
+@pytest.mark.parametrize(
+    ("image", "expected"),
+    [
+        ("https://cdn.example.org/a.png", "https://cdn.example.org/a.png"),
+        ("//cdn.example.org/a.png", "https://cdn.example.org/a.png"),
+        ("data:image/png;base64,AAAA", None),
+        ("javascript:alert(1)", None),
+    ],
+)
+def test_og_image(image: str, expected: str | None) -> None:
+    head = f'<meta property="og:image" content="{image}">'
+
+    assert parse(jsonld_page(head=head)).image_url == expected
+
+
+def test_title_falls_back_to_the_title_tag() -> None:
+    page = parse(jsonld_page(head="<title>Hack &amp; Learn</title>"))
+
+    assert page.title == "Hack & Learn"
+
+
+def test_no_title_at_all() -> None:
+    assert parse(jsonld_page()).title is None
+
+
+# --- main text ----------------------------------------------------------------------
+
+
+def test_long_text_is_truncated() -> None:
+    paragraphs = "".join(f"<p>Paragraph {i}: {'lorem ipsum ' * 40}</p>" for i in range(100))
+
+    page = parse(f"<html><body><article>{paragraphs}</article></body></html>")
+
+    assert page.text_truncated
+    assert len(page.text) == MAX_TEXT_CHARS
+
+
+@pytest.mark.parametrize(
+    ("length", "truncated"),
+    [(MAX_TEXT_CHARS - 1, False), (MAX_TEXT_CHARS, False), (MAX_TEXT_CHARS + 1, True)],
+)
+def test_truncation_boundary(monkeypatch: pytest.MonkeyPatch, length: int, truncated: bool) -> None:
+    monkeypatch.setattr(trafilatura, "extract", lambda *_, **__: "x" * length)
+    monkeypatch.setattr(page_module, "_page_text", lambda *_: "")
+
+    page = parse(jsonld_page())
+
+    assert page.text_truncated is truncated
+    assert len(page.text) == min(length, MAX_TEXT_CHARS)
+
+
+def test_plain_body_text_is_the_fallback() -> None:
+    # A bare list of short lines: too little for trafilatura's article detection.
+    lines = "".join(f"<div>Kural {i}: takımlar en fazla dört kişidir.</div>" for i in range(10))
+    markup = f"<html><body><script>var x = 1;</script><style>p{{}}</style>{lines}</body></html>"
+
+    page = parse(markup)
+
+    assert "Kural 9: takımlar en fazla dört kişidir." in page.text
+    assert "var x" not in page.text
+    assert len(page.text) >= MIN_TEXT_CHARS
+
+
+ARTICLE = "".join(
+    f"<p>Paragraf {i}: Hackathon boyunca takımlar mentorlarla çalışacak, prototiplerini "
+    "geliştirecek ve jüriye sunacak. Etkinlik öğrencilere açık ve deneyim kazandırır.</p>"
+    for i in range(6)
+)
+
+
+def side_page(aside: str, *, head: str = "", before: str = "", after: str = "") -> str:
+    """An article (trafilatura's main text) with page parts next to it."""
+    return (
+        f"<html><head>{head}</head><body>{before}<main><article><h1>Grid Hack</h1>{ARTICLE}"
+        f"</article><aside>{aside}</aside></main>{after}</body></html>"
+    )
+
+
+SIDEBAR = (
+    "<div><div>Ödül Havuzu</div><div>200.000 TL</div></div>"
+    "<ul><li>Team required: 2 to 4 members</li></ul>"
+    "<div><span>Son Başvuru:</span><span>31 Ağustos 2026</span></div>"
+)
+
+
+def test_facts_outside_the_article_are_in_the_text() -> None:
+    text = parse(side_page(SIDEBAR)).text
+
+    assert "Ödül Havuzu\n200.000 TL" in text  # sidebar facts trafilatura leaves out
+    assert "Team required: 2 to 4 members" in text
+    assert "Son Başvuru: 31 Ağustos 2026" in text  # inline parts stay on one line
+    assert text.count("Paragraf 3: Hackathon boyunca") == 1
+
+
+def test_a_timeline_date_keeps_its_label() -> None:
+    steps = "".join(
+        f'<div><span class="date">{day}</span><h4>{label}</h4><p>{note}</p></div>'
+        for day, label, note in [
+            ("3 Ağustos – 7 Eylül", "Başvuru formu", "Formu eksiksiz doldurun."),
+            ("9 – 11 Ekim", "Hackathon", "Yüz yüze final."),
+        ]
+    )
+
+    text = parse(side_page(steps)).text
+
+    assert "3 Ağustos – 7 Eylül\nBaşvuru formu" in text
+
+
+def test_over_the_limit_the_article_comes_first(monkeypatch: pytest.MonkeyPatch) -> None:
+    monkeypatch.setattr(page_module, "MAX_TEXT_CHARS", 2000)
+    article = "# Grid Hack\n\n" + "\n\n".join(
+        f"Paragraf {i}: Hackathon boyunca takımlar mentorlarla çalışacak, prototiplerini "
+        "geliştirecek ve jüriye sunacak. Etkinlik öğrencilere açık ve deneyim kazandırır."
+        for i in range(6)
+    )
+    monkeypatch.setattr(page_module, "_article_text", lambda *_: article)
+    before = "".join(f"<div>Duyuru {i}: başka etkinliğin haberi.</div>" for i in range(30))
+
+    page = parse(side_page(SIDEBAR, before=before))
+
+    assert page.text.startswith(article + "\n\n")  # the article first
+    assert page.text.count("Paragraf 3: Hackathon boyunca") == 1  # not repeated after it
+    assert "Duyuru 0: başka etkinliğin haberi." in page.text  # then the other page lines
+    assert page.text_truncated
+    assert len(page.text) == 2000
+
+
+def test_menus_and_footers_are_left_out_but_a_hero_header_stays() -> None:
+    markup = side_page(
+        "<p>Sidebar</p>",
+        before="<header><nav><a href='/a'>Ana Sayfa</a> <a href='/b'>Duyurular</a></nav></header>"
+        "<header><p>Hackathon tarihi: 10-12 Ekim 2026</p></header>",
+        after="<footer>Copyright Örnek Kurum</footer>",
+    )
+
+    text = parse(markup).text
+
+    assert "Hackathon tarihi: 10-12 Ekim 2026" in text
+    assert "Duyurular" not in text
+    assert "Copyright" not in text
+
+
+@pytest.mark.parametrize(
+    ("link", "line"),
+    [
+        ('<a href="/hack/apply">Hemen Başvur</a>', "Hemen Başvur (https://example.org/hack/apply)"),
+        (
+            '<a href="https://forms.example.com/f/1">KAYIT FORMU</a>',
+            "(https://forms.example.com/f/1)",
+        ),
+        ('<a href="https://x.jotform.com/26196">Apply Now</a>', "(https://x.jotform.com/26196)"),
+        (
+            '<a href="/hack2026/register">Buraya tıklayın</a>',
+            "(https://example.org/hack2026/register)",
+        ),
+        ('<a href="https://devpost.example/register?c=1">Join hackathon</a>', "(https://devpost"),
+    ],
+)
+def test_registration_links_keep_their_target(link: str, line: str) -> None:
+    assert line in parse(side_page(f"<p>Başvurular açık: {link}</p>")).text
+
+
+@pytest.mark.parametrize(
+    "link",
+    [
+        '<a href="/hakkimizda">Hakkımızda</a>',  # not a registration link
+        '<a href="#basvur">Başvur</a>',  # the page itself
+        f'<a href="{PAGE_URL}/">Başvur</a>',
+        '<a href="javascript:void(0)">Başvur</a>',
+        '<a href="mailto:hack@example.org">Başvur</a>',
+    ],
+)
+def test_other_links_keep_no_target(link: str) -> None:
+    text = parse(side_page(f"<p>Bağlantı: {link}</p>")).text
+
+    assert "(http" not in text
+    assert "javascript" not in text and "mailto" not in text
+
+
+def test_a_menu_apply_link_is_kept_but_account_links_are_not() -> None:
+    menu = (
+        "<nav><a href='https://secure.example.com/users/register'>Sign up</a>"
+        "<a href='/login'>Kayıt ol</a>"
+        "<a href='https://x.jotform.com/26196'>Apply Now</a></nav>"
+    )
+
+    text = parse(side_page("<p>Sidebar</p>", before=f"<header>{menu}</header>")).text
+
+    assert "Apply Now (https://x.jotform.com/26196)" in text
+    assert "users/register" not in text
+    assert "/login" not in text
+
+
+def test_a_menu_entry_about_applications_in_general_is_left_out() -> None:
+    menu = "<nav><a href='/uyeler/basvuru-dokumanlari'>Başvuru Dokümanları</a></nav>"
+
+    text = parse(side_page("<p>Sidebar</p>", before=f"<header>{menu}</header>")).text
+
+    assert "basvuru-dokumanlari" not in text
+
+
+@pytest.mark.parametrize(
+    "href", ["/kayitol", "/uye-ol?next=/hack", "https://secure.example.com/users/register"]
+)
+def test_site_account_links_keep_no_target(href: str) -> None:
+    text = parse(side_page(f'<p>Hesap: <a href="{href}">Kayıt ol</a></p>')).text
+
+    assert "(http" not in text
+
+
+def test_link_targets_are_page_content_for_the_evidence_check() -> None:
+    # The target is written into PageContent.text, the text evidence is checked against.
+    page = parse(side_page('<a href="/hack/apply">Başvuru formu</a>'))
+
+    assert "https://example.org/hack/apply" in page.text
+
+
+def test_short_page_has_no_readable_content() -> None:
+    with pytest.raises(PageError, match="no readable content"):
+        parse("<html><body><p>Too short.</p></body></html>")
+
+
+# --- encodings ----------------------------------------------------------------------
+
+TURKISH = "Çalıştay: İğne, şeker, ölçü, ünlü, ğ."
+HTTP_EQUIV = '<meta http-equiv="Content-Type" content="text/html; charset=iso-8859-9">'
+
+
+@pytest.mark.parametrize(
+    ("body", "declared"),
+    [
+        (TURKISH.encode("utf-8"), "utf-8"),
+        (TURKISH.encode("utf-8"), None),  # undeclared UTF-8
+        (b"\xef\xbb\xbf" + TURKISH.encode("utf-8"), "windows-1254"),  # the BOM wins
+        (TURKISH.encode("cp1254"), "windows-1254"),
+        (TURKISH.encode("cp1254"), "ISO-8859-9"),
+        (TURKISH.encode("cp1254"), None),  # undeclared legacy page: cp1254
+        (TURKISH.encode("cp1254"), "no-such-charset"),
+        (f'<meta charset="windows-1254">{TURKISH}'.encode("cp1254"), None),
+        (f"{HTTP_EQUIV}{TURKISH}".encode("cp1254"), None),
+    ],
+)
+def test_decode_html(body: bytes, declared: str | None) -> None:
+    assert decode_html(body, declared).endswith(TURKISH)
+
+
+CYRILLIC = "Хакатон для студентов"
+
+
+def test_meta_charset_is_sniffed() -> None:
+    body = f'<html><head><meta charset="koi8-r"></head><body>{CYRILLIC}'.encode("koi8-r")
+
+    assert CYRILLIC in decode_html(body, None)
+
+
+def test_http_charset_wins_over_meta_charset() -> None:
+    body = f'<meta charset="windows-1254">{CYRILLIC}'.encode("koi8-r")
+
+    assert decode_html(body, "koi8-r").endswith(CYRILLIC)
+
+
+@pytest.mark.parametrize(
+    "label",
+    # Python codecs that are not text encodings, or that a page must not choose.
+    [
+        *("base64", "rot13", "hex", "zlib", "bz2", "uu", "quopri"),
+        *("idna", "punycode", "utf-7", "unicode_escape", "raw_unicode_escape", "utf-32", "mbcs"),
+    ],
+)
+@pytest.mark.parametrize("where", ["http", "meta"])
+def test_non_text_charsets_are_ignored(label: str, where: str) -> None:
+    head = f'<meta charset="{label}">' if where == "meta" else ""
+    body = f"{head}{TURKISH}".encode()
+
+    assert decode_html(body, label if where == "http" else None).endswith(TURKISH)
+
+
+@pytest.mark.parametrize("label", ["utf-16", "UTF-16LE", "utf-16be", "utf-32"])
+def test_utf16_in_meta_means_utf8(label: str) -> None:
+    body = f'<meta charset="{label}">{TURKISH}'.encode()
+
+    assert decode_html(body, None).endswith(TURKISH)
+
+
+def test_utf16_from_the_http_header_is_honoured() -> None:
+    assert decode_html(TURKISH.encode("utf-16-le"), "utf-16le") == TURKISH
+
+
+def test_non_text_charset_from_http_does_not_break_the_import() -> None:
+    body = jsonld_page(event(name="Doğu Hackathonu")).encode()
+
+    page = loader(respond(body, "text/html; charset=base64")).load_page(PAGE_URL)
+
+    assert page.structured["title"].value == "Doğu Hackathonu"
+
+
+def test_http_charset_reaches_the_decoder() -> None:
+    markup = jsonld_page(event(name="Doğu Hackathonu Şubat"))
+    body = markup.encode("cp1254")
+
+    page = loader(respond(body, "text/html; charset=windows-1254")).load_page(PAGE_URL)
+
+    assert page.structured["title"].value == "Doğu Hackathonu Şubat"
+
+
+# --- fetch errors -------------------------------------------------------------------
+
+
+def test_blocked_url() -> None:
+    with pytest.raises(PageError, match="URL not allowed: host resolves to a non-public"):
+        loader(respond(b""), {"example.org": ["10.0.0.1"]}).load_page(PAGE_URL)
+
+
+@pytest.mark.parametrize("url", ["file:///etc/passwd", "http://127.0.0.1/", "ftp://example.org"])
+def test_blocked_url_schemes_and_addresses(url: str) -> None:
+    with pytest.raises(PageError, match="URL not allowed"):
+        loader(respond(b"")).load_page(url)
+
+
+@pytest.mark.parametrize("content_type", ["application/json", "image/png", "text/plain"])
+def test_not_html(content_type: str) -> None:
+    with pytest.raises(PageError, match="not an HTML page"):
+        loader(respond(b"{}", content_type)).load_page(PAGE_URL)
+
+
+def test_too_large() -> None:
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    with pytest.raises(PageError, match="too large"):
+        loader(respond(body), max_body_bytes=1_000).load_page(PAGE_URL)
+
+
+@pytest.mark.parametrize("status", [404, 410, 500, 503])
+def test_http_error_status(status: int) -> None:
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    with pytest.raises(PageError, match=f"page returned HTTP {status}"):
+        loader(respond(body, status=status)).load_page(PAGE_URL)
+
+
+def test_timeout() -> None:
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        raise httpx2.ReadTimeout("slow")
+
+    with pytest.raises(PageError, match="page could not be fetched: request timed out"):
+        loader(handler).load_page(PAGE_URL)
+
+
+def test_unexpected_parser_errors_become_page_errors(
+    monkeypatch: pytest.MonkeyPatch, caplog: pytest.LogCaptureFixture
+) -> None:
+    def broken(*args: object, **kwargs: object) -> PageContent:
+        raise RuntimeError("secret page content")
+
+    monkeypatch.setattr(page_module, "parse_page", broken)
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    with pytest.raises(PageError, match=r"^page could not be parsed$"):
+        loader(respond(body)).load_page(PAGE_URL)
+
+    assert "RuntimeError" in caplog.text
+    assert "secret page content" not in caplog.text
+
+
+def test_page_errors_from_parsing_are_kept() -> None:
+    body = fixture("js_only.html").encode("utf-8")
+
+    with pytest.raises(PageError, match="no readable content"):
+        loader(respond(body)).load_page(PAGE_URL)
+
+
+def test_default_fetcher_has_the_longer_import_timeout(monkeypatch: pytest.MonkeyPatch) -> None:
+    created: list[dict[str, object]] = []
+
+    def record(**kwargs: object) -> SafeFetcher:
+        created.append(kwargs)
+        return SafeFetcher()
+
+    monkeypatch.setattr(page_module, "SafeFetcher", record)
+    HtmlPageLoader()
+
+    assert created == [{"timeout": FETCH_TIMEOUT_SECONDS}]
+    assert FETCH_TIMEOUT_SECONDS == 20.0
+
+
+def test_redirect_sets_the_final_url() -> None:
+    body = fixture("event_jsonld.html").encode("utf-8")
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        if request.url.path == "/h":
+            return httpx2.Response(301, headers={"location": "/hack"})
+        return respond(body)(request)
+
+    page = loader(handler).load_page("https://example.org/h")
+
+    assert page.requested_url == "https://example.org/h"
+    assert page.final_url == PAGE_URL

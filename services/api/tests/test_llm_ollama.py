@@ -175,6 +175,26 @@ def test_generate_text_sets_num_predict_and_no_format() -> None:
     assert "format" not in bodies[0]
 
 
+def test_num_ctx_is_sent_on_every_chat_including_the_repair_retry() -> None:
+    bodies: list[dict[str, Any]] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        bodies.append(json.loads(request.content))
+        return chat_reply("{}") if len(bodies) == 1 else chat_reply('{"city": "x", "year": 1}')
+
+    client = httpx2.Client(transport=httpx2.MockTransport(handler))
+    provider = OllamaProvider(BASE, MODEL, timeout_s=5, client=client, num_ctx=16384)
+
+    provider.generate_structured(system="s", user="u", schema=Sample)
+
+    assert [body["options"]["num_ctx"] for body in bodies] == [16384, 16384]
+
+
+def test_num_ctx_must_be_positive() -> None:
+    with pytest.raises(LLMConfigError, match="num_ctx"):
+        OllamaProvider(BASE, MODEL, timeout_s=1, num_ctx=0)
+
+
 def tags(*names: str) -> httpx2.Response:
     return httpx2.Response(200, json={"models": [{"name": n, "model": n} for n in names]})
 

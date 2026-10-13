@@ -88,6 +88,7 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
 - **Status:** Accepted (2026-09-28)
 
 ### D-15 Crawling stack (V1.2+): httpx2 + selectolax + trafilatura, Playwright only per-source; no Crawl4AI; no SQLite
+- **V1.2:** `selectolax` 1.0.0 (MIT) and `trafilatura` 2.3.1 (Apache-2.0) added; versions and transitive licenses in CRAWLING_RESEARCH §1
 - **Status:** Accepted (2026-09-28)
 
 ### D-16 Provenance: event-level `event_sources` in V1; field-level evidence in V1.2
@@ -147,3 +148,60 @@ Status values: **Proposed** (awaiting owner approval), **Accepted**, **Supersede
   - The public notice is accurate about providers, locations and basis, and claims nothing more.
 - **Revisit:** after legal advice, if the community grows, or when the Authority issues guidance or an adequacy decision.
 - **Status:** Accepted (owner risk acceptance)
+
+### D-23 Cloud LLM: OpenAI API (supersedes D-09 default)
+- **Options:** keep local Ollama (D-09) · OpenAI Responses API with data sharing (complimentary daily tokens)
+- **Chosen:** `LLM_PROVIDER=openai` with `OpenAIProvider` (raw REST over httpx2, no SDK, D-10/D-20). Model default `gpt-5.4-mini` (effort `none`) pending the benchmark; Ollama stays as the fallback provider (`LLM_PROVIDER=ollama`, still the code default until the owner switches)
+- **Data sharing:** prompts and outputs may be used for training, and calls are a transfer to the US (D-22). Only public event pages go there; application data never does
+- **Guards:** KVKK mask (`llm/pii.py`: e-mails, phones, valid TC Kimlik numbers) on every outbound string; architecture test keeps `fhc_api.community` from importing `fhc_api.llm`; `store: false`; dedicated project key with a **hard monthly spend limit**; in-process daily token budget (`OPENAI_DAILY_TOKEN_BUDGET`, follow-up: DB-backed counter); errors and logs never carry the key or prompt
+- **Pass 1:** strict structured output with `maxLength`/`minimum` and `temperature: 0` at effort `none` verified live 2026-10-13 (OPENAI_API_RESEARCH §5)
+- **Pass 2:** V1.2 benchmark 2026-10-13 (LLM_BENCHMARK, run 2): `gpt-5.4-mini` 92% accuracy, 100% date accuracy, 0 fabricated dates, 3.6 s and about 3.9k tokens per page → default model `gpt-5.4-mini`
+- **Status:** Accepted (2026-10-13), owner decision; default model `gpt-5.4-mini` per the benchmark
+
+### D-24 Discovery architecture: deterministic adapters first, web search as a gap-finder
+- **Options:** A. LLM web search (OpenAI `web_search`) as the engine · B. curated source adapters + change detection as the engine, with watchlists, inbound links, web search and link expansion as supplements · C. generic JSON-LD harvesting (Common Crawl / Web Data Commons) · D. third-party search APIs (Brave, Exa, Tavily, SerpAPI)
+- **Chosen:** B, in this priority:
+  1. Source adapters + change detection (JSON endpoints, sitemaps with `lastmod`, JSON-LD, list-region hash, ID diff, conditional GET).
+  2. Organizer/series watchlists (`app.event_series`).
+  3. Admin-bot forwarded links and community suggestions (URL only).
+  4. OpenAI `web_search` twice a week as a gap-finder: only citation URLs are used, never facts from the answer text; hosts that are not sources become source suggestions.
+  5. One-hop link expansion from accepted events.
+- **Scope:** in-person events in Türkiye and online events (global included). In-person events abroad are a hard reject.
+- **Review load:** relevance threshold (score ≥ 40 → draft) and a daily cap of drafts (`DISCOVERY_MAX_DRAFTS_PER_DAY`, default 15, owner capacity 10–15/day). The rest wait in the queue.
+- **Data:** `app.candidates` queue (claimed with `FOR UPDATE SKIP LOCKED`, no Redis), adapter columns on `app.sources` incl. `tos_status`, `app.event_series`, deterministic `relevance_score` + `relevance_reasons` per candidate.
+- **LLM role:** triage and extraction (D-23 provider, `gpt-5.4-mini`), larger model only for retries and flagged dedup pairs. No LLM for relevance, verification or status.
+- **Devpost:** integrated directly from V1.4a and enabled by default, although Devpost ToS §4 forbids automated access ("automated software, devices, scripts robots…", "scrape", "crawl", "spider"). **The owner accepts this risk (2026-10-13)** and chose not to request permission first. Mitigations:
+  - only the public listing JSON and public event pages; no login, nothing behind authentication;
+  - list fetch once a day; at most 1 request per 5–10 s; conditional GETs;
+  - descriptive User-Agent with the site URL; robots.txt respected;
+  - only event facts plus a link back to Devpost with attribution; no participant or user data;
+  - kill switch `DEVPOST_ENABLED`, to turn the adapter off at once on a complaint or block;
+  - no evasion: if Devpost blocks us, the adapter stops and is not worked around.
+- **Reason:** most relevant events sit on fewer than 15 platforms and organizer pages with structured data. Adapters give complete lists at zero token cost with high precision; web search has medium recall and precision, varies between runs and is paid (`web_search` is not covered by the complimentary tokens).
+- **Risks:** adapter rot on redesigns (0-item alarms, fixtures per adapter); ToS (R-21 Devpost, owner-accepted; other sources checked per source); paid search spend (R-23); queue flood (cap).
+- **Pass 1:** robots, sitemaps and endpoints of 25 sources fetched on 2026-10-13 (DISCOVERY_RESEARCH §1). **Pass 2:** Coderspace's JSON API is `Disallow`ed, so its sitemap + JSON-LD are used instead; Luma, BTK Akademi, Techolay and DoraHacks are blocked or forbid automation and are never automated; Instagram, LinkedIn and Telegram channels only through human forwarding.
+- **Revisit:** if gold-list recall from adapters stays below 70%, or web search finds more than adapters; on any complaint from a source.
+- **Status:** Accepted (2026-10-13). Devpost risk: accepted by the owner (2026-10-13)
+
+### D-25 Event types and type filters
+- **Options:** A. hackathons only · B. free-text `categories` labels · C. a fixed `event_type` field
+- **Chosen:** C. New enum `app.event_type` = `hackathon`, `ideathon`, `datathon` (incl. Kaggle-style competitions), `game_jam`, `competition` (Teknofest-style). Column `app.events.event_type` not null, default `hackathon` (the 6 legacy events and all current events are hackathons).
+- **Where it appears:**
+  - `api.events_public` (view recreated; pgTAP updated);
+  - V1.2 extractor gets an `event_type` field (enum, with snippet); adapters set it from structured hints when they can;
+  - admin: Events list filter and event form field;
+  - public listing moves to `/etkinlikler` (owner, 2026-10-13): type filter beside format and city (URL parameter, Turkish slugs: `hackathon`, `ideathon`, `datathon`, `game-jam`, `yarisma`), labels in `lib/copy.ts`, a type badge in rows and on the detail page, JSON-LD unchanged (`Event`);
+  - Telegram caption: a type label line (e.g. "Tür: Ideathon"). This changes the caption, so existing live posts show `changed` once and can be updated.
+- **Reason:** the owner wants all five types; a fixed field gives reliable filters and is cheap to classify. `categories` stays for topics (Q12).
+- **Route:** the public listing becomes `/etkinlikler` and `/etkinlikler/[slug]` with the title "Etkinlikler" (owner, 2026-10-13). `/hackathonlar` and `/hackathonlar/[slug]` answer with a permanent redirect (308) to the new path, so existing links, Telegram posts and search results keep working; sitemap, canonical URLs, the OG card URL and `WEB_BASE_URL` detail links switch to the new path.
+- **Risks:** borderline events (a "hackathon" that is really a competition) → admin can change the type; a short SEO dip after the move.
+- **Revisit:** add a type only when the gold list shows a recurring kind that fits none of the five.
+- **Status:** Accepted (2026-10-13); built in V1.3
+
+### D-26 Discovery scheduling: Windows Task Scheduler on the local machine
+- **Options:** A. Windows Task Scheduler running a CLI · B. in-process APScheduler while the API runs · C. GitHub Actions / Vercel Cron in the cloud
+- **Chosen:** A. Tasks run `uv run python -m fhc_api.discovery run --due` daily and the `web_search` sweep twice a week, with "Run task as soon as possible after a scheduled start is missed" (catch-up when the laptop was off) and "Do not start a new instance" if one is still running.
+- **Reason:** keeps the local FastAPI as the single writer (D-05) and keeps the DB credentials and the OpenAI key on the laptop. Cloud runners would need both in the cloud and split the writer; they stay for keep-alive only (D-19).
+- **Risks:** nothing runs while the laptop is off for days (catch-up runs on the next start; queue persists); a stuck run (per-run time limit, run row marked failed).
+- **Revisit:** if the API moves to an always-on host (same trigger as D-21).
+- **Status:** Accepted (2026-10-13); built in V1.5

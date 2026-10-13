@@ -1,5 +1,5 @@
 import Link from "next/link"
-import { PlusIcon } from "lucide-react"
+import { LinkIcon, PlusIcon } from "lucide-react"
 
 import { ApiErrorState } from "@/components/api-error-state"
 import { EventsTable } from "@/components/events-table"
@@ -62,6 +62,10 @@ export default async function EventsPage({ searchParams }: PageProps<"/events">)
                   <Link href="/events/new" className={buttonVariants({ size: "sm" })}>
                     <PlusIcon data-icon="inline-start" />
                     New event
+                  </Link>
+                  <Link href="/events/import" className={buttonVariants({ size: "sm", variant: "outline" })}>
+                    <LinkIcon data-icon="inline-start" />
+                    Import from URL
                   </Link>
                   <FilterLinks label="Filter events" options={filters} />
                 </>

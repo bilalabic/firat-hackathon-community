@@ -1,0 +1,22 @@
+[
+  {"id": "legacy-grid-up", "group": "legacy", "language": "tr", "url": "https://www.patika.dev/bootcamp/grid-up-hackathon"},
+  {"id": "legacy-zemin360", "group": "legacy", "language": "tr", "url": "https://www.zemin360.com/hackathon"},
+  {"id": "legacy-borsa-istanbul", "group": "legacy", "language": "tr", "url": "https://www.borsaistanbul.com/fintech-hackathon"},
+  {"id": "legacy-greece-turkiye", "group": "legacy", "language": "en", "url": "https://greeceturkiyehackathon.com"},
+  {"id": "legacy-devnetwork-api", "group": "legacy", "language": "en", "url": "https://api-cloud-ai-hackathon-2026.devpost.com/"},
+  {"id": "legacy-oneaquahealth", "group": "legacy", "language": "en", "url": "https://oneaquahealth-ieee-hackathon.devpost.com/"},
+  {"id": "devpost-hackturin", "group": "devpost", "language": "en", "url": "https://hackturin-2026.devpost.com/"},
+  {"id": "devpost-codered-orion", "group": "devpost", "language": "en", "url": "https://codered-orion-ccs.devpost.com/"},
+  {"id": "devpost-hacknc", "group": "devpost", "language": "en", "url": "https://hacknc-2026.devpost.com/"},
+  {"id": "devpost-paypal-ai", "group": "devpost", "language": "en", "url": "https://paypalaihackathon.devpost.com/"},
+  {"id": "devpost-qloo", "group": "devpost", "language": "en", "url": "https://qloo.devpost.com/"},
+  {"id": "devpost-next-byte", "group": "devpost", "language": "en", "url": "https://next-byte-hacks-v5.devpost.com/"},
+  {"id": "devpost-indux", "group": "devpost", "language": "en", "url": "https://indux-5-0-2026.devpost.com/"},
+  {"id": "tr-vbt-mugla", "group": "turkish", "language": "tr", "url": "https://nuriokumus.github.io/Hackathon2026/"},
+  {"id": "tr-datamedx", "group": "turkish", "language": "tr", "url": "https://aday.istinye.edu.tr/datamedx-hackathon"},
+  {"id": "tr-anadolu-ozal", "group": "turkish", "language": "tr", "url": "https://www.ozal.edu.tr/page/announcement/anadolu-hackathon-yarismasi-basvurulari-basliyor-1536"},
+  {"id": "tr-anadolu-ankara", "group": "turkish", "language": "tr", "url": "https://sw.eng.ankara.edu.tr/2026/03/17/anadolu-hackathon-etkinligi-hk/"},
+  {"id": "tr-ytu-student", "group": "turkish", "language": "tr", "url": "https://www.yildizteknopark.com.tr/duyurular/student-hackathon-egitim-serisi-basvurulari-acildi.html"},
+  {"id": "tr-ing-orkam", "group": "turkish", "language": "tr", "url": "https://orkam.yildiz.edu.tr/ing-hubs-turkiye-agentic-ai-hackathon-basvurulari-basladi/"},
+  {"id": "tr-ing-coderspace", "group": "turkish", "language": "tr", "url": "https://coderspace.io/etkinlikler/ing-hubs-turkiye-agentic-hackathon"}
+]

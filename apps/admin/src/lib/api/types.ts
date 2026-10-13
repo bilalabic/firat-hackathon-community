@@ -44,3 +44,12 @@ export type Publication = Schemas["PublicationOut"]
 export type PublicationStatus = Publication["status"]
 export type PostState = ChannelPreview["post_state"]
 export type ChannelActionOut = Schemas["ChannelActionOut"]
+
+export type UrlImportOut = Schemas["UrlImportOut"]
+export type ImportRun = Schemas["RunOut"]
+export type ImportRunPage = Schemas["RunPage"]
+export type Evidence = Schemas["EvidenceOut"]
+export type FieldEvidence = Schemas["FieldEvidenceOut"]
+export type EvidenceSource = NonNullable<FieldEvidence["source"]>
+export type EvidenceFlag = Schemas["FlagOut"]
+export type FlagKind = EvidenceFlag["kind"]

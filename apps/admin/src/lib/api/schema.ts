@@ -456,6 +456,73 @@ export type paths = {
         patch?: never;
         trace?: never;
     };
+    "/imports/url": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        get?: never;
+        put?: never;
+        /**
+         * Import Event Url
+         * @description Creates a draft event from an event page, with field evidence. Synchronous and
+         *     slow: usually 5-30 s, up to ~90 s when the local LLM loads its model (a cold
+         *     start), so clients must wait at least 2 minutes.
+         *
+         *     `duplicate` (200) when an event with the same normalized official URL exists;
+         *     nothing is created. 422 when the URL is invalid or the page cannot be read (the
+         *     run is recorded as failed). 409 when URL import is not configured. An LLM failure
+         *     still creates the draft from the structured page data (`run.stats.llm_error`).
+         */
+        post: operations["import_event_url"];
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/imports/runs": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * List Import Runs
+         * @description Newest first. A run that stays `running` long after it started was interrupted.
+         */
+        get: operations["list_import_runs"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
+    "/events/{event_id}/evidence": {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        /**
+         * Get Event Evidence
+         * @description Field evidence of the event's latest import; empty for events entered by hand.
+         */
+        get: operations["get_event_evidence"];
+        put?: never;
+        post?: never;
+        delete?: never;
+        options?: never;
+        head?: never;
+        patch?: never;
+        trace?: never;
+    };
 };
 export type webhooks = Record<string, never>;
 export type components = {
@@ -1087,6 +1154,59 @@ export type components = {
             /** Internal Notes */
             internal_notes?: string | null;
         };
+        /** EvidenceOut */
+        EvidenceOut: {
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** @description The import that produced the evidence */
+            run: components["schemas"]["RunOut"] | null;
+            /** Extracted At */
+            extracted_at: string | null;
+            /**
+             * Fields
+             * @description Latest import only, in form order
+             */
+            fields: components["schemas"]["FieldEvidenceOut"][];
+        };
+        /** FieldEvidenceOut */
+        FieldEvidenceOut: {
+            /** Field */
+            field: string;
+            /**
+             * Value Text
+             * @description The proposed value; null when it was dropped
+             */
+            value_text: string | null;
+            /** Source */
+            source: ("jsonld" | "meta" | "llm" | "manual") | null;
+            /** Extracted By */
+            extracted_by: string | null;
+            /**
+             * Snippet
+             * @description Supporting text from the page
+             */
+            snippet: string | null;
+            /** Flags */
+            flags: components["schemas"]["FlagOut"][];
+            /**
+             * Matches Current
+             * @description The event still has the proposed value; null without a value
+             */
+            matches_current: boolean | null;
+        };
+        /** FlagOut */
+        FlagOut: {
+            /**
+             * Kind
+             * @enum {string}
+             */
+            kind: "unsupported" | "conflict" | "rule_violation" | "invalid";
+            /** Detail */
+            detail: string;
+        };
         /** HTTPValidationError */
         HTTPValidationError: {
             /** Detail */
@@ -1265,6 +1385,65 @@ export type components = {
             duplicates: components["schemas"]["DuplicateCandidate"][];
             /** Sources By Tier */
             sources_by_tier: components["schemas"]["TierCount"][];
+        };
+        /** RunOut */
+        RunOut: {
+            /**
+             * Id
+             * Format: uuid
+             */
+            id: string;
+            /**
+             * Kind
+             * @constant
+             */
+            kind: "url_import";
+            /**
+             * Status
+             * @description running (in progress, or interrupted when it stays running), succeeded or failed
+             * @enum {string}
+             */
+            status: "running" | "succeeded" | "failed";
+            /**
+             * Url
+             * @description The requested URL (`input.url`)
+             */
+            url: string | null;
+            /**
+             * Event Id
+             * @description The created event (or the existing duplicate)
+             */
+            event_id: string | null;
+            /**
+             * Error
+             * @description Operator-facing reason of a failed run
+             */
+            error: string | null;
+            /**
+             * Stats
+             * @description Durations (ms), field and flag counts, extracted_by, llm_error, final_url, image_url (og:image suggestion, never downloaded)
+             */
+            stats: {
+                [key: string]: unknown;
+            };
+            /**
+             * Started At
+             * Format: date-time
+             */
+            started_at: string;
+            /** Finished At */
+            finished_at: string | null;
+        };
+        /** RunPage */
+        RunPage: {
+            /** Items */
+            items: components["schemas"]["RunOut"][];
+            /** Total */
+            total: number;
+            /** Limit */
+            limit: number;
+            /** Offset */
+            offset: number;
         };
         /** Signal */
         Signal: {
@@ -1473,6 +1652,30 @@ export type components = {
             detail: string | {
                 [key: string]: unknown;
             }[];
+        };
+        /** UrlImportIn */
+        UrlImportIn: {
+            /**
+             * Url
+             * @description The event page (http or https, public host)
+             */
+            url: string;
+        };
+        /** UrlImportOut */
+        UrlImportOut: {
+            /**
+             * Outcome
+             * @description created: a new draft event; duplicate: an event with the same normalized official URL exists (nothing was created)
+             * @enum {string}
+             */
+            outcome: "created" | "duplicate";
+            /**
+             * Event Id
+             * Format: uuid
+             */
+            event_id: string;
+            /** @description Null for a duplicate found before fetching */
+            run: components["schemas"]["RunOut"] | null;
         };
         /** ValidationError */
         ValidationError: {
@@ -2897,6 +3100,147 @@ export interface operations {
                 };
                 content: {
                     "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+        };
+    };
+    import_event_url: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody: {
+            content: {
+                "application/json": components["schemas"]["UrlImportIn"];
+            };
+        };
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UrlImportOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Conflict */
+            409: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Unprocessable Entity */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["UnprocessableOut"];
+                };
+            };
+        };
+    };
+    list_import_runs: {
+        parameters: {
+            query?: {
+                limit?: number;
+                offset?: number;
+            };
+            header?: never;
+            path?: never;
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["RunPage"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
+                };
+            };
+        };
+    };
+    get_event_evidence: {
+        parameters: {
+            query?: never;
+            header?: never;
+            path: {
+                event_id: string;
+            };
+            cookie?: never;
+        };
+        requestBody?: never;
+        responses: {
+            /** @description Successful Response */
+            200: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["EvidenceOut"];
+                };
+            };
+            /** @description Unauthorized */
+            401: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Not Found */
+            404: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["ErrorOut"];
+                };
+            };
+            /** @description Validation Error */
+            422: {
+                headers: {
+                    [name: string]: unknown;
+                };
+                content: {
+                    "application/json": components["schemas"]["HTTPValidationError"];
                 };
             };
         };

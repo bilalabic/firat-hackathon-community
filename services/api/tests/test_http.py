@@ -2,6 +2,7 @@
 httpx2.MockTransport."""
 
 from collections.abc import Callable, Iterator, Mapping, Sequence
+from typing import Any
 
 import httpx2
 import pytest
@@ -10,6 +11,7 @@ from fhc_api.common.http import (
     MAX_REDIRECTS,
     USER_AGENT,
     BlockedUrlError,
+    ContentTypeError,
     FetchError,
     SafeFetcher,
     check_url,
@@ -31,7 +33,7 @@ def resolver_for(table: Mapping[str, Sequence[str]]) -> Callable[[str, int], Seq
 
 
 def fetcher(
-    handler: Handler, dns: Mapping[str, Sequence[str]] | None = None, **kwargs: int
+    handler: Handler, dns: Mapping[str, Sequence[str]] | None = None, **kwargs: Any
 ) -> SafeFetcher:
     return SafeFetcher(
         resolver=resolver_for(dns if dns is not None else {"example.com": [PUBLIC_IP]}),
@@ -356,6 +358,33 @@ def test_other_content_types_are_refused_when_reading_a_body(content_type: str) 
         fetcher(lambda _: response).fetch("https://example.com/")
 
 
+def test_content_types_narrow_the_allow_list() -> None:
+    response = httpx2.Response(200, headers={"content-type": "application/json"}, content=b"{}")
+
+    with pytest.raises(ContentTypeError, match="'application/json' is not allowed"):
+        fetcher(lambda _: response).fetch(
+            "https://example.com/", content_types=frozenset({"text/html"})
+        )
+
+
+def test_content_types_cannot_widen_the_allow_list() -> None:
+    response = httpx2.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF")
+
+    with pytest.raises(ContentTypeError, match="'application/pdf' is not allowed"):
+        fetcher(lambda _: response).fetch(
+            "https://example.com/", content_types=frozenset({"application/pdf", "text/html"})
+        )
+
+
+def test_charset_from_the_content_type_header() -> None:
+    response = httpx2.Response(
+        200, headers={"content-type": "text/html; charset=windows-1254"}, content=b"x"
+    )
+
+    assert fetcher(lambda _: response).fetch("https://example.com/").charset == "windows-1254"
+    assert fetcher(lambda _: html()).fetch("https://example.com/").charset == "utf-8"
+
+
 def test_headers_only_fetch_skips_the_body_and_content_type_check() -> None:
     response = httpx2.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF")
 
@@ -382,3 +411,77 @@ def test_transport_errors_become_fetch_errors(error: Exception, message: str) ->
 
     with pytest.raises(FetchError, match=message):
         fetcher(handler).fetch("https://example.com/")
+
+
+# --- timeouts -----------------------------------------------------------------------
+
+
+def test_per_phase_timeout_is_configurable() -> None:
+    seen: list[object] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.extensions["timeout"])
+        return html()
+
+    fetcher(handler).fetch("https://example.com/")
+    fetcher(handler, timeout=20.0).fetch("https://example.com/")
+
+    assert seen == [
+        {"connect": 10.0, "read": 10.0, "write": 10.0, "pool": 10.0},
+        {"connect": 20.0, "read": 20.0, "write": 20.0, "pool": 20.0},
+    ]
+
+
+class FakeClock:
+    def __init__(self) -> None:
+        self.now = 0.0
+
+    def __call__(self) -> float:
+        return self.now
+
+
+def test_deadline_limits_the_redirect_chain() -> None:
+    clock = FakeClock()
+    hops: list[str] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        hops.append(request.url.path)
+        clock.now += 30.0  # each hop is slow but within the per-phase timeout
+        return redirect(f"/hop{len(hops)}", 302)
+
+    with pytest.raises(FetchError, match="request timed out"):
+        fetcher(handler, deadline=45.0, clock=clock).fetch("https://example.com/")
+
+    assert hops == ["/", "/hop1"]  # the third hop is not started
+
+
+def test_last_hop_gets_only_the_remaining_time() -> None:
+    clock = FakeClock()
+    seen: list[object] = []
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        seen.append(request.extensions["timeout"]["read"])
+        if request.url.path == "/":
+            clock.now += 40.0
+            return redirect("/next", 302)
+        return html()
+
+    fetcher(handler, timeout=20.0, deadline=45.0, clock=clock).fetch("https://example.com/")
+
+    assert seen == [20.0, 5.0]
+
+
+def test_deadline_stops_a_slow_body() -> None:
+    clock = FakeClock()
+
+    class SlowStream(httpx2.SyncByteStream):
+        def __iter__(self) -> Iterator[bytes]:
+            for _ in range(10):
+                clock.now += 10.0
+                yield b"x"
+
+    def handler(request: httpx2.Request) -> httpx2.Response:
+        return httpx2.Response(200, headers={"content-type": "text/html"}, stream=SlowStream())
+
+    with pytest.raises(FetchError, match="request timed out"):
+        fetcher(handler, deadline=45.0, clock=clock).fetch("https://example.com/")
