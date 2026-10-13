@@ -76,6 +76,10 @@ class MisconfiguredProvider:
     def name(self) -> str:
         return self._name
 
+    @property
+    def model(self) -> str:
+        return self._configured_model
+
     def generate_structured(
         self, *, system: str, user: str, schema: type[T], temperature: float = 0.0
     ) -> T:

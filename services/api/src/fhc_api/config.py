@@ -49,6 +49,8 @@ class Settings(BaseSettings):
     OPENAI_MODEL: str = "gpt-5.4-mini"
     OPENAI_BASE_URL: str = "https://api.openai.com"
     OPENAI_TIMEOUT_S: float = Field(default=90.0, gt=0)
+    # Wall-clock cap per generate call, including retries and the repair retry.
+    OPENAI_TOTAL_TIMEOUT_S: float = Field(default=120.0, gt=0)
     # Sent only to reasoning models (gpt-5.x, o-series): none|minimal|low|medium|high|xhigh.
     OPENAI_REASONING_EFFORT: str = "none"
     OPENAI_MAX_OUTPUT_TOKENS: int = Field(default=4000, gt=0)

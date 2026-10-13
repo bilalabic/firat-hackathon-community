@@ -31,6 +31,7 @@ def test_openai_settings_defaults() -> None:
     assert settings.OPENAI_BASE_URL == "https://api.openai.com"
     assert settings.OPENAI_REASONING_EFFORT == "none"
     assert settings.OPENAI_DAILY_TOKEN_BUDGET == 2_000_000
+    assert settings.OPENAI_TOTAL_TIMEOUT_S == 120.0
 
 
 def test_openai_is_selected_and_configured_from_settings() -> None:
@@ -38,14 +39,14 @@ def test_openai_is_selected_and_configured_from_settings() -> None:
         LLM_PROVIDER=" OpenAI ",
         OPENAI_API_KEY=KEY,
         OPENAI_MODEL="gpt-4.1-mini",
-        OPENAI_DAILY_TOKEN_BUDGET=1000,
+        OPENAI_DAILY_TOKEN_BUDGET=10_000,
     )
     app = create_app(settings, url_import=True)
 
     provider = app.state.llm
     assert isinstance(provider, OpenAIProvider)
     assert provider.model == "gpt-4.1-mini"
-    assert provider.daily_token_budget == 1000
+    assert provider.daily_token_budget == 10_000
     assert active_llm_model(settings) == "gpt-4.1-mini"
     extractor = app.state.importer._extractor
     assert isinstance(extractor, LLMExtractor)
@@ -83,3 +84,15 @@ def test_unknown_provider_is_reported() -> None:
     assert health["status"] == "error"
     assert health["provider"] == "unknown"
     assert "LLM_PROVIDER must be one of" in health["message"]
+
+
+def test_model_label_follows_an_injected_provider() -> None:
+    injected = OpenAIProvider(KEY, " gpt-4o ", timeout_s=1)
+    app = create_app(make_settings(), llm_provider=injected, url_import=True)
+    assert app.state.importer._extractor._model_label == "gpt-4o"
+
+
+def test_model_label_of_a_misconfigured_provider_is_its_configured_model() -> None:
+    app = create_app(make_settings(LLM_PROVIDER="openai", OPENAI_MODEL="gpt-4o"), url_import=True)
+    assert isinstance(app.state.llm, MisconfiguredProvider)
+    assert app.state.importer._extractor._model_label == "gpt-4o"
